@@ -1,3 +1,5 @@
+import 'evidence_highlights.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -540,32 +542,16 @@ class _CourtExperienceState extends State<CourtExperience> {
     }
   }
 
-  Future<void> _viewEvidence(Map<String, dynamic> exhibit) => showDialog<void>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('${exhibit['id']} · ${_names[exhibit['owner'] as int].text}'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.file(
-              File(exhibit['path'] as String),
-              errorBuilder: (_, error, stack) =>
-                  const Text('Local evidence file unavailable.'),
-            ),
-            const SizedBox(height: 12),
-            Text(exhibit['caption'] as String),
-          ],
+  Future<void> _viewEvidence(Map<String, dynamic> exhibit) =>
+      Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => EvidenceHighlights(
+            path: exhibit['path'] as String,
+            caption: exhibit['caption'] as String,
+            judge: _judge,
+          ),
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Close'),
-        ),
-      ],
-    ),
-  );
+      );
 
   Future<Map<String, dynamic>> _docket() async {
     final exhibits = <Map<String, dynamic>>[];
@@ -608,7 +594,7 @@ class _CourtExperienceState extends State<CourtExperience> {
               : 'Send the case for a ruling?',
         ),
         content: Text(
-          'This sends both names, the requested compensation, testimony, questions, answers, rebuttals and ${_evidence.length} evidence photo(s) with captions to Meta Muse Spark through your server. Confirm you have permission to share these exhibits. Character portraits are excluded.',
+          'This sends both names, the requested compensation, testimony, questions, answers, rebuttals and ${_evidence.length} evidence photo(s) with captions to Meta ${action == 'appeal' ? 'Muse Wonder' : 'Muse Spark'} through your server. Confirm you have permission to share these exhibits. Character portraits are excluded.',
         ),
         actions: [
           TextButton(

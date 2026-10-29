@@ -1,4 +1,4 @@
-package com.example.couple_court
+package com.jcm.closer
 
 import io.flutter.embedding.android.FlutterActivity
 

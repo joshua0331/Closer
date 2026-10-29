@@ -68,6 +68,21 @@ class HostedTests(unittest.TestCase):
         self.assertEqual(self.client.get('/docs').status_code, 404)
         self.assertEqual(self.client.get('/healthz').json(), {'status': 'ready'})
 
+    @patch('hosted_app.segment_evidence')
+    def test_sam_requires_session_and_reserves_total_budget(self, upstream):
+        from test_court_protocol import PHOTO
+        payload = {'image_base64': PHOTO, 'prompt': 'plate'}
+        upstream.return_value = {'model': 'sam-3.1', 'prompt': 'plate', 'boxes': []}
+        self.assertEqual(self.client.post('/segment', json=payload).status_code, 401)
+        upstream.assert_not_called()
+        token = self.connect()
+        headers = self.headers(token)
+        self.assertEqual(self.client.post('/segment', json=payload, headers=headers).status_code, 200)
+        self.assertEqual(self.security.policy()['calls_used'], 1)
+        self.assertEqual(self.security.policy()['images_used'], 0)
+        self.assertEqual(self.client.post('/segment', json=payload, headers=headers).status_code, 409)
+        self.assertEqual(upstream.call_count, 1)
+
     @patch('hosted_app.call_meta')
     def test_revoke_and_disable_stop_existing_sessions(self, upstream):
         token = self.connect()

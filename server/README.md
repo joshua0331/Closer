@@ -55,5 +55,14 @@ Official vision format: https://dev.meta.ai/docs/image-understanding
 
 ## Hosted judging demo
 
-For the new private-code, expiring-session hosted API, use hosted_app.py and follow docs/hosted-demo.md. The older judge_server.py remains a local-only developer proxy. The public app build contains BACKEND_URL only; judges enter their private demo code inside Closer. The selected Firebase/Google Cloud project is iseeapp-ddf3a, with a separate us-demo-backend database planned to avoid changing iSee's default data/rules. Nothing is deployed yet.
+For the new private-code, expiring-session hosted API, use hosted_app.py and follow docs/hosted-demo.md. The older judge_server.py remains a local-only developer proxy. The public app build contains BACKEND_URL only; judges enter their private demo code inside Closer. The selected Firebase/Google Cloud project is iseeapp-ddf3a, with a separate closer-demo-backend database planned to avoid changing iSee's default data/rules. Nothing is deployed yet.
 
+
+
+## Additional models — October 29, 2026
+
+Questions and first rulings use Muse Spark; appeals route server-side to `muse-wonder-1.0` with the full prior record. No automatic Spark fallback is used for appeals.
+
+`POST /segment` accepts one base64 exhibit and a short concrete object prompt. It calls `sam-3.1` through the Responses streaming API, validates complete output and returns normalized object boxes (not decoded pixel masks). The evidence viewer offers upload consent and a highlights toggle; the original remains unchanged and the judge still receives original evidence. SAM boxes do not authenticate evidence and are not treated as judge findings. No-match output is valid; malformed/incomplete output fails. This endpoint uses the existing session, total-call budget, deduplication and concurrency controls; it does not consume image-generation quota. Highlights are temporary and can be requested again, consuming another call. Live Meta validation remains pending.
+
+Official formats: https://dev.meta.ai/docs/models and https://dev.meta.ai/docs/sam/reading-segmentation.

@@ -8,7 +8,7 @@
 PRODUCT_NAME = Closer
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.example.coupleCourt
+PRODUCT_BUNDLE_IDENTIFIER = com.jcm.closer
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright Ã‚Â© 2026 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright (C) 2026 JCM. All rights reserved.

@@ -15,10 +15,11 @@ from demo_security import AccessError, DemoAccess
 from demo_storage import make_records
 from judge_server import call_meta, validate
 from court_protocol import call_hearing, validate_hearing
+from sam_evidence import segment_evidence, validate_segment
 from muse_image import create_scene, validate_photos
 
 MODELS = {'muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'}
-LIMITS = {'judge': 32768, 'hearing': 6100000, 'characters': 3100000}
+LIMITS = {'judge': 32768, 'hearing': 6100000, 'characters': 3100000, 'segment': 1500000}
 
 
 def reply(status, body):
@@ -93,6 +94,7 @@ def make_app(records=None, api_key=None, model=None, clock=None):
     @app.post('/judge')
     @app.post('/hearing')
     @app.post('/characters')
+    @app.post('/segment')
     async def model_request(request: Request):
         reservation = None
         try:
@@ -108,6 +110,8 @@ def make_app(records=None, api_key=None, model=None, clock=None):
                     validate(payload)
                 elif operation == 'hearing':
                     validate_hearing(payload)
+                elif operation == 'segment':
+                    validate_segment(payload)
                 else:
                     validate_photos(payload)
             except (ValueError, KeyError, TypeError, UnicodeError):
@@ -116,7 +120,9 @@ def make_app(records=None, api_key=None, model=None, clock=None):
             reservation = await run_in_threadpool(app.state.security.reserve, token, operation, request_id, fingerprint)
             # An operator can disable new calls immediately without redeploying.
             # Already-running provider requests may still complete.
-            if operation == 'characters':
+            if operation == 'segment':
+                result = await run_in_threadpool(segment_evidence, payload, app.state.meta_key)
+            elif operation == 'characters':
                 result = await run_in_threadpool(create_scene, payload, app.state.meta_key)
             elif operation == 'hearing':
                 result = await run_in_threadpool(call_hearing, payload, app.state.meta_key, app.state.meta_model)

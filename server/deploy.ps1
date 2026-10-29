@@ -18,13 +18,13 @@ Push-Location -LiteralPath $workspacePath
 try {
     # Provisioning, secret creation and database initialization are separate,
     # explicit steps in hosted-demo.md. This script does not touch iSee apps/rules.
-    $serviceAccount = "us-demo-runtime@$ProjectId.iam.gserviceaccount.com"
-    $imageName = "$Region-docker.pkg.dev/$ProjectId/us-demo/backend:latest"
+    $serviceAccount = "closer-demo-runtime@$ProjectId.iam.gserviceaccount.com"
+    $imageName = "$Region-docker.pkg.dev/$ProjectId/closer-demo/backend:latest"
     Invoke-Cloud -CloudArgs @('builds','submit','.', '--project',$ProjectId,'--config','server/cloudbuild.yaml','--substitutions',"_IMAGE=$imageName")
-    Invoke-Cloud -CloudArgs @('run','deploy','us-demo-backend','--project',$ProjectId,'--region',$Region,
+    Invoke-Cloud -CloudArgs @('run','deploy','closer-demo-backend','--project',$ProjectId,'--region',$Region,
       '--image',$imageName,'--service-account',$serviceAccount,
       '--allow-unauthenticated','--concurrency','4','--max-instances','2','--min-instances','0',
       '--timeout','240','--memory','512Mi','--cpu','1',
-      '--set-env-vars',"BUDGET_STORE=firestore,GOOGLE_CLOUD_PROJECT=$ProjectId,FIRESTORE_DATABASE=us-demo-backend,BUDGET_COLLECTION=us_demo_security,META_JUDGE_MODEL=muse-spark-1.3",
-      '--set-secrets',"MODEL_API_KEY=us-meta-api-key:$MetaSecretVersion")
+      '--set-env-vars',"BUDGET_STORE=firestore,GOOGLE_CLOUD_PROJECT=$ProjectId,FIRESTORE_DATABASE=closer-demo-backend,BUDGET_COLLECTION=closer_demo_security,META_JUDGE_MODEL=muse-spark-1.3",
+      '--set-secrets',"MODEL_API_KEY=closer-meta-api-key:$MetaSecretVersion")
 } finally { Pop-Location }

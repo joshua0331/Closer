@@ -22,6 +22,59 @@ class JudgeService {
   bool get configured => endpoint.isNotEmpty && token.isNotEmpty;
   void close() => _client.close();
 
+  Future<List<Map<String, dynamic>>> segment(
+    String image,
+    String prompt,
+  ) async {
+    if (!configured) {
+      throw const JudgeException('Connect AI demo access first.');
+    }
+    try {
+      final response = await _client
+          .post(
+            Uri.parse(endpoint).resolve('segment'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+              'X-Request-ID': newRequestId(),
+            },
+            body: jsonEncode({'image_base64': image, 'prompt': prompt}),
+          )
+          .timeout(const Duration(seconds: 90));
+      final error = demoErrorMessage(response.statusCode);
+      if (error != null) throw JudgeException(error);
+      if (response.statusCode != 200 || response.bodyBytes.length > 30000) {
+        throw const FormatException();
+      }
+      final data = jsonDecode(response.body);
+      if (data['model'] != 'sam-3.1' ||
+          data['boxes'] is! List ||
+          (data['boxes'] as List).length > 50) {
+        throw const FormatException();
+      }
+      return (data['boxes'] as List).map((box) {
+        for (final key in ['left', 'top', 'right', 'bottom']) {
+          if (box[key] is! num ||
+              !(box[key] as num).isFinite ||
+              box[key] < 0 ||
+              box[key] > 1) {
+            throw const FormatException();
+          }
+        }
+        if (box['left'] >= box['right'] || box['top'] >= box['bottom']) {
+          throw const FormatException();
+        }
+        return Map<String, dynamic>.from(box as Map);
+      }).toList();
+    } on JudgeException {
+      rethrow;
+    } catch (_) {
+      throw const JudgeException(
+        'SAM could not complete this request. The original photo is unchanged.',
+      );
+    }
+  }
+
   Future<HearingReply> hearing(
     String action,
     Map<String, dynamic> docket,

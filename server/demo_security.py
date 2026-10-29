@@ -111,7 +111,7 @@ class DemoAccess:
         return self.records.transaction(['policy', key, session_key], update)
 
     def reserve(self, token, operation, request_id, fingerprint):
-        if operation not in {'judge', 'hearing', 'characters'}:
+        if operation not in {'judge', 'hearing', 'characters', 'segment'}:
             raise AccessError(404, 'Unknown operation')
         if not isinstance(token, str) or not re.fullmatch('[A-Za-z0-9_-]{32,128}', token):
             raise AccessError(401, 'Enter your private demo code to connect.')

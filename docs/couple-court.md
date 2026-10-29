@@ -50,3 +50,12 @@ Tests use synthetic evidence and mocked Meta responses. No live API call has bee
 ## Hackathon
 
 The supplied guide explicitly includes Muse Image and Muse Spark. Couple Court targets Build for Your World as a playful everyday-dispute experience. Public repo, event-built work disclosures, asset rights and an accessible three-minute demo remain submission requirements; see docs/hackathon.md.
+
+
+## Additional models — October 29, 2026
+
+Questions and first rulings use Muse Spark; appeals route server-side to `muse-wonder-1.0` with the full prior record. No automatic Spark fallback is used for appeals.
+
+`POST /segment` accepts one base64 exhibit and a short concrete object prompt. It calls `sam-3.1` through the Responses streaming API, validates complete output and returns normalized object boxes (not decoded pixel masks). The evidence viewer offers upload consent and a highlights toggle; the original remains unchanged and the judge still receives original evidence. SAM boxes do not authenticate evidence and are not treated as judge findings. No-match output is valid; malformed/incomplete output fails. This endpoint uses the existing session, total-call budget, deduplication and concurrency controls; it does not consume image-generation quota. Highlights are temporary and can be requested again, consuming another call. Live Meta validation remains pending.
+
+Official formats: https://dev.meta.ai/docs/models and https://dev.meta.ai/docs/sam/reading-segmentation.

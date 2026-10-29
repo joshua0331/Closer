@@ -1,8 +1,8 @@
 import 'dart:convert';
 
-import 'package:couple_court/main.dart';
-import 'package:couple_court/models/couple_store.dart';
-import 'package:couple_court/screens/court_experience.dart';
+import 'package:closer/main.dart';
+import 'package:closer/models/couple_store.dart';
+import 'package:closer/screens/court_experience.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

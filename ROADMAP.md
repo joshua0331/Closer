@@ -23,7 +23,9 @@ Last updated: October 29, 2026. Checkboxes describe implementation status, not p
 - [x] Muse Spark multimodal requests containing actual evidence images.
 - [x] Judge questions for both participants.
 - [x] Structured evidence review and remedy proposal tied to the original request.
-- [x] One appeal with prior ruling, grounds and the other participant's response.
+- [x] Muse Wonder appeal with prior ruling, grounds and the other participant's response.
+- [x] Optional SAM 3.1 object-box highlights, original-photo toggle and separate upload consent.
+- [ ] Verify live SAM results and overlay alignment on real photos.
 - [x] Separate acceptance by both participants or an unresolved closure.
 - [x] Validation and mocked tests for requests, exhibits and rulings.
 - [ ] Configure private Meta credentials and verify model access.

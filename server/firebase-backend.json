@@ -1,7 +1,7 @@
 {
   "firestore": [
     {
-      "database": "us-demo-backend",
+      "database": "closer-demo-backend",
       "rules": "firestore-demo.rules"
     }
   ]

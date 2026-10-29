@@ -1,8 +1,8 @@
 import 'dart:convert';
 
-import 'package:couple_court/screens/demo_access_page.dart';
-import 'package:couple_court/services/backend_access.dart';
-import 'package:couple_court/services/judge_service.dart';
+import 'package:closer/screens/demo_access_page.dart';
+import 'package:closer/services/backend_access.dart';
+import 'package:closer/services/judge_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;

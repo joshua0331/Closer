@@ -7,6 +7,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from sam_evidence import segment_evidence, validate_segment
 from muse_image import create_scene, validate_photos
 from court_protocol import call_hearing, validate_hearing
 
@@ -111,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_POST(self):
-        if self.path not in {'/judge', '/characters', '/hearing'}:
+        if self.path not in {'/judge', '/characters', '/hearing', '/segment'}:
             self.reply(404, {'error': 'Not found'})
             return
         supplied = self.headers.get('Authorization', '')
@@ -121,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             size = int(self.headers.get('Content-Length', '0'))
-            limit = 6100000 if self.path == '/hearing' else (3100000 if self.path == '/characters' else 32768)
+            limit = 6100000 if self.path == '/hearing' else (3100000 if self.path == '/characters' else (1500000 if self.path == '/segment' else 32768))
             if not 1 <= size <= limit:
                 self.reply(413, {'error': 'Invalid request size'})
                 return
@@ -130,6 +131,8 @@ class Handler(BaseHTTPRequestHandler):
                 validate_photos(payload)
             elif self.path == '/hearing':
                 validate_hearing(payload)
+            elif self.path == '/segment':
+                validate_segment(payload)
             else:
                 payload = validate(payload)
         except (ValueError, TypeError, KeyError, UnicodeError, TimeoutError):
@@ -139,7 +142,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(429, {'error': 'Please wait before retrying'})
             return
         try:
-            result = (create_scene(payload, self.server.api_key) if self.path == '/characters'
+            result = (segment_evidence(payload, self.server.api_key) if self.path == '/segment'
+                      else create_scene(payload, self.server.api_key) if self.path == '/characters'
                       else call_hearing(payload, self.server.api_key, self.server.model) if self.path == '/hearing'
                       else call_meta(payload, self.server.api_key, self.server.model))
             self.reply(200, result)

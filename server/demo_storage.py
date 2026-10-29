@@ -38,7 +38,7 @@ class SQLiteRecords:
 
 
 class FirestoreRecords:
-    def __init__(self, project=None, collection='us_demo_security', database='us-demo-backend'):
+    def __init__(self, project=None, collection='closer_demo_security', database='closer-demo-backend'):
         from google.cloud import firestore
         self.firestore = firestore
         self.client = firestore.Client(project=project, database=database)
@@ -67,7 +67,7 @@ def make_records():
     if os.environ.get('K_SERVICE') and mode != 'firestore':
         raise RuntimeError('Hosted Cloud Run requires Firestore for persistent quotas.')
     if mode == 'firestore':
-        return FirestoreRecords(os.environ.get('GOOGLE_CLOUD_PROJECT'), os.environ.get('BUDGET_COLLECTION', 'us_demo_security'), os.environ.get('FIRESTORE_DATABASE', 'us-demo-backend'))
+        return FirestoreRecords(os.environ.get('GOOGLE_CLOUD_PROJECT'), os.environ.get('BUDGET_COLLECTION', 'closer_demo_security'), os.environ.get('FIRESTORE_DATABASE', 'closer-demo-backend'))
     if mode == 'sqlite':
         return SQLiteRecords(os.environ.get('DEMO_DB_PATH', '.local/us_demo.db'))
     raise RuntimeError('Unknown budget store')

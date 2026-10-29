@@ -25,29 +25,29 @@ Use separate named resources. Do not replace iSee app entries, its default datab
 
 1. Ensure billing is enabled and install/sign into Google Cloud CLI. Install backend requirements in a Python environment (`pip install -r server/requirements-dev.txt`).
 2. In project iseeapp-ddf3a, enable Cloud Run, Cloud Build, Artifact Registry, Secret Manager and Firestore APIs.
-3. Create a NEW native Firestore database named us-demo-backend in your chosen region. This holds only private demo security/quota records. server/demo_storage.py explicitly selects this database; it does not default to iSee's database.
+3. Create a NEW native Firestore database named closer-demo-backend in your chosen region. This holds only private demo security/quota records. server/demo_storage.py explicitly selects this database; it does not default to iSee's database.
 4. Deploy server/firestore-demo.rules to that named database only:
 
 ```powershell
 firebase deploy --only firestore:rules --config server/firebase-backend.json --project iseeapp-ddf3a
 ```
 
-The configuration names only us-demo-backend. Do not replace it with a generic deploy of iSee's rules. Mobile clients must have no read/write access to security records.
+The configuration names only closer-demo-backend. Do not replace it with a generic deploy of iSee's rules. Mobile clients must have no read/write access to security records.
 
-5. Create service account us-demo-runtime in the project. Grant roles/datastore.user ONLY with an IAM condition limiting its database access:
+5. Create service account closer-demo-runtime in the project. Grant roles/datastore.user ONLY with an IAM condition limiting its database access:
 
 ```text
-resource.name == 'projects/iseeapp-ddf3a/databases/us-demo-backend'
+resource.name == 'projects/iseeapp-ddf3a/databases/closer-demo-backend'
 ```
 
-6. Create Secret Manager secret us-meta-api-key. Enter your Meta key privately in Secret Manager, never in this repository or chat. Grant the runtime service account Secret Accessor on THIS secret only. Pin the deployed secret version.
-7. Create an Artifact Registry Docker repository named us-demo in the same region. Ensure the Cloud Build identity can push to it. Configure application-default credentials for the following operator-only admin steps.
+6. Create Secret Manager secret closer-meta-api-key. Enter your Meta key privately in Secret Manager, never in this repository or chat. Grant the runtime service account Secret Accessor on THIS secret only. Pin the deployed secret version.
+7. Create an Artifact Registry Docker repository named closer-demo in the same region. Ensure the Cloud Build identity can push to it. Configure application-default credentials for the following operator-only admin steps.
 8. Initialize the persistent policy ONCE and create private judging codes. These commands do not call Meta:
 
 ```powershell
 $env:BUDGET_STORE = 'firestore'
 $env:GOOGLE_CLOUD_PROJECT = 'iseeapp-ddf3a'
-$env:FIRESTORE_DATABASE = 'us-demo-backend'
+$env:FIRESTORE_DATABASE = 'closer-demo-backend'
 python server/demo_admin.py init --calls 100 --images 5 --hours 336
 python server/demo_admin.py invite --label 'Judge 1' --calls 20 --images 1 --sessions 6 --hours 336
 ```
@@ -104,3 +104,12 @@ References:
 - https://firebase.google.com/docs/firestore/manage-databases
 - https://docs.cloud.google.com/run/docs/configuring/services/secrets
 - https://docs.cloud.google.com/sdk/gcloud/reference/run/deploy
+
+
+## Additional models — October 29, 2026
+
+Questions and first rulings use Muse Spark; appeals route server-side to `muse-wonder-1.0` with the full prior record. No automatic Spark fallback is used for appeals.
+
+`POST /segment` accepts one base64 exhibit and a short concrete object prompt. It calls `sam-3.1` through the Responses streaming API, validates complete output and returns normalized object boxes (not decoded pixel masks). The evidence viewer offers upload consent and a highlights toggle; the original remains unchanged and the judge still receives original evidence. SAM boxes do not authenticate evidence and are not treated as judge findings. No-match output is valid; malformed/incomplete output fails. This endpoint uses the existing session, total-call budget, deduplication and concurrency controls; it does not consume image-generation quota. Highlights are temporary and can be requested again, consuming another call. Live Meta validation remains pending.
+
+Official formats: https://dev.meta.ai/docs/models and https://dev.meta.ai/docs/sam/reading-segmentation.

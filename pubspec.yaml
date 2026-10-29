@@ -1,4 +1,4 @@
-name: couple_court
+name: closer
 description: "Closer — a couple app with chat, memories and AI Couple Court."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.

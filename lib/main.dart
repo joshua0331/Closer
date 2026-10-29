@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models/couple_store.dart';
 import 'screens/couple_home.dart';
-import 'theme/us_theme.dart';
+import 'theme/closer_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

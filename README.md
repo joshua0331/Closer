@@ -50,7 +50,7 @@ The runtime AI integrations call **Meta Model API directly**, through `https://a
 | Personalized courtroom | Muse Image (`muse-image-1.0`) | Courtroom reference plus two consented portraits | A complete pixel-art scene with both participants redrawn into the artwork |
 | Judge questions | Muse Spark (`muse-spark-1.3`) | Both openings, cross-examination, rebuttals, requested remedy and evidence images | One relevant clarification question per participant |
 | Evidence review and verdict | Muse Spark (`muse-spark-1.3`) | Full hearing record, both judge answers and image exhibits | Structured ruling, observations and limitations for each exhibit, and a proposed remedy |
-| Appeal | Muse Spark (`muse-spark-1.3`) | Prior ruling, appeal grounds, other participant's response and evidence | Explained revised or upheld proposal |
+| Appeal | Muse Wonder (`muse-wonder-1.0`) | Prior ruling, appeal grounds, other participant's response and evidence | Explained revised or upheld proposal |
 
 ### Muse Image: characters belong in the scene
 
@@ -71,14 +71,14 @@ flowchart TD
     A[Flutter: Closer] --> B[Private demo code → expiring session]
     B --> C[Python hosted API: authorization and quotas]
     C --> D[Muse Image: portraits + scene reference]
-    C --> E[Muse Spark: case record + evidence]
+    C --> E[Muse Spark: hearing + evidence]
     D --> F[Personalized pixel-art courtroom]
     E --> G[Questions → explained verdict → optional appeal]
     F --> A
     G --> A
 ```
 
-Muse Wonder, SAM and voice models are not integrated. Practice hearings and bundled reference artwork are separate from live Meta output.
+SAM 3.1 (`sam-3.1`) provides optional object-box highlights in the exhibit viewer. Users name a concrete object and separately consent to upload. Originals remain visible and go to the judge unchanged; boxes do not authenticate evidence. No matches is a valid result. Highlights are session-only visual aids and are not included as facts in the hearing record. Voice models are not integrated. Practice hearings and bundled reference artwork are separate from live Meta output.
 
 ## Run the local prototype
 
@@ -116,6 +116,10 @@ For a loopback-only developer proxy, see [server/README.md](server/README.md). I
 The app requests consent before sending portraits or hearing material to the model service. The proxy processes photos and testimony in memory and suppresses request logs; the security database is for access/quota records. Requests set `store: false`, which is not a blanket guarantee about provider retention. Review Meta's applicable account policies before uploading private material.
 
 Use only photos and conversations you have permission to share. A public demo should use fictional cases and consented or synthetic portraits. Couple Court offers voluntary suggestions for everyday disagreements; it does not establish facts, diagnose users, enforce compensation or replace professional help.
+
+## Application identifiers
+
+The Dart package is `closer`. Android, iOS and macOS use `com.jcm.closer`; Firebase registrations must use that exact identifier. Couple Court remains the name of the hearing feature. Changing the native identifier creates a separate installation from older builds; data in the previous app installation is not transferred automatically. Existing local storage keys are retained for compatible data.
 
 ## Firebase and two phones
 
