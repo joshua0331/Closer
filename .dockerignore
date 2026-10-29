@@ -1,0 +1,13 @@
+**
+!server/
+!server/*.py
+!server/requirements.txt
+!server/Dockerfile
+!assets/
+!assets/court/
+!assets/court/courtroom.png
+server/test_*.py
+server/__pycache__/
+.env*
+**/*secret*
+**/*credentials*

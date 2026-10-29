@@ -1,0 +1,15 @@
+**
+!.dockerignore
+!.gcloudignore
+!server/
+!server/**
+!assets/
+!assets/court/
+!assets/court/courtroom.png
+server/test_*.py
+server/__pycache__/**
+server/*.db
+server/*.db-*
+**/.env*
+**/*credentials*
+**/*secret*.json

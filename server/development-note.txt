@@ -1,0 +1,2 @@
+# Only the Android emulator can use this local development proxy address.
+# This exception does not allow general cleartext traffic in release builds.

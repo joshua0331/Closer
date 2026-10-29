@@ -1,0 +1,182 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+import 'backend_access.dart';
+
+class JudgeResult {
+  const JudgeResult(this.text, this.model);
+  final String text, model;
+}
+
+class JudgeService {
+  JudgeService({http.Client? client, String? endpoint, String? token})
+    : _client = client ?? http.Client(),
+      endpoint = endpoint ?? defaultJudgeUrl(),
+      _explicitToken = token;
+  final http.Client _client;
+  final String endpoint;
+  final String? _explicitToken;
+  String get token => _explicitToken ?? defaultApiToken(endpoint);
+  bool get configured => endpoint.isNotEmpty && token.isNotEmpty;
+  void close() => _client.close();
+
+  Future<HearingReply> hearing(
+    String action,
+    Map<String, dynamic> docket,
+  ) async {
+    if (!configured) {
+      throw const JudgeException(
+        'The Meta judge is not connected. Practice mode does not examine evidence.',
+      );
+    }
+    try {
+      final uri = Uri.parse(endpoint).resolve('hearing');
+      final response = await _client
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+              'X-Request-ID': newRequestId(),
+            },
+            body: jsonEncode({'action': action, 'case': docket}),
+          )
+          .timeout(const Duration(seconds: 90));
+      final accessError = demoErrorMessage(response.statusCode);
+      if (accessError != null) throw JudgeException(accessError);
+      if (response.statusCode != 200 || response.bodyBytes.length > 300000) {
+        throw const JudgeException(
+          'The judge could not complete this step. Your case is unchanged; please retry.',
+        );
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final model = data['model'];
+      final result = data['result'];
+      if (model is! String ||
+          model.isEmpty ||
+          result is! Map<String, dynamic>) {
+        throw const FormatException();
+      }
+      final reviews = result['evidenceReview'];
+      if (reviews is! List) throw const FormatException();
+      final ids = (docket['evidence'] as List).map((e) => e['id']).toSet();
+      final seen = <String>{};
+      for (final review in reviews) {
+        if (review is! Map ||
+            review['id'] is! String ||
+            review['observation'] is! String ||
+            review['limitation'] is! String ||
+            !ids.contains(review['id']) ||
+            !seen.add(review['id'] as String)) {
+          throw const FormatException();
+        }
+      }
+      if (seen.length != ids.length) throw const FormatException();
+      if (action == 'questions') {
+        final questions = result['questions'];
+        if (questions is! List ||
+            questions.length != 2 ||
+            questions.any((q) => q is! String || q.trim().isEmpty)) {
+          throw const FormatException();
+        }
+      } else {
+        if (!{
+              'grant',
+              'reduce',
+              'increase',
+              'deny',
+              'alternative',
+            }.contains(result['decision']) ||
+            result['requestedRemedy'] != docket['requestedRemedy']) {
+          throw const FormatException();
+        }
+        for (final key in ['proposedRemedy', 'reasoning', 'uncertainties']) {
+          if (result[key] is! String ||
+              (result[key] as String).trim().isEmpty) {
+            throw const FormatException();
+          }
+        }
+      }
+      return HearingReply(model, result);
+    } on JudgeException {
+      rethrow;
+    } on TimeoutException {
+      throw const JudgeException(
+        'The judge is taking too long. Please retry this step.',
+      );
+    } catch (_) {
+      throw const JudgeException(
+        'Could not read the judge’s response. No ruling has been changed.',
+      );
+    }
+  }
+
+  Future<JudgeResult> hear({
+    required String topic,
+    required List<String> names,
+    required List<String> statements,
+  }) async {
+    if (!configured) {
+      throw const JudgeException(
+        'The AI judge is not connected yet. You can still try the practice verdict.',
+      );
+    }
+    try {
+      final response = await _client
+          .post(
+            Uri.parse(endpoint),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+              'X-Request-ID': newRequestId(),
+            },
+            body: jsonEncode({
+              'topic': topic,
+              'names': names,
+              'statements': statements,
+            }),
+          )
+          .timeout(const Duration(seconds: 70));
+      final accessError = demoErrorMessage(response.statusCode);
+      if (accessError != null) throw JudgeException(accessError);
+      if (response.statusCode != 200) {
+        throw const JudgeException(
+          'The judge could not respond. Your statements are safe here; please try again.',
+        );
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final text = data['verdict'];
+      final model = data['model'];
+      if (text is! String ||
+          text.trim().isEmpty ||
+          model is! String ||
+          model.isEmpty) {
+        throw const FormatException();
+      }
+      return JudgeResult(text.trim(), model);
+    } on JudgeException {
+      rethrow;
+    } on TimeoutException {
+      throw const JudgeException(
+        'The judge is taking longer than expected. Please try again.',
+      );
+    } catch (_) {
+      throw const JudgeException(
+        'Could not reach the judge. Check the connection and try again.',
+      );
+    }
+  }
+}
+
+class JudgeException implements Exception {
+  const JudgeException(this.message);
+  final String message;
+}
+
+class HearingReply {
+  const HearingReply(this.model, this.result);
+  final String model;
+  final Map<String, dynamic> result;
+}
