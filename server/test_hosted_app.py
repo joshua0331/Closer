@@ -66,7 +66,7 @@ class HostedTests(unittest.TestCase):
         upstream.assert_not_called()
         self.assertEqual(self.security.policy()['calls_used'], 0)
         self.assertEqual(self.client.get('/docs').status_code, 404)
-        self.assertEqual(self.client.get('/healthz').json(), {'status': 'ready'})
+        self.assertEqual(self.client.get('/api/health').json(), {'status': 'ready'})
 
     @patch('hosted_app.segment_evidence')
     def test_sam_requires_session_and_reserves_total_budget(self, upstream):

@@ -25,7 +25,7 @@ The wider app keeps conversations and memories beside the hearing, so court is o
 | Chat | Text and photo messages, replies, heart reactions, copy and court summons | Saved on one device; messages are not delivered to another phone |
 | Memories | Photo selection, captions and local photo storage | No shared cloud album yet |
 | Court | Timed hearings, evidence, questions, requested remedy, AI integration and one appeal | Live AI requires a configured backend; timers and roles are locally enforced |
-| Us | Profile names, anniversary, local counts and AI demo access | Accounts and lasting partner pairing are planned |
+| Closer | Profile names, anniversary, local counts and AI demo access | Accounts and lasting partner pairing are planned |
 
 Chat summons open their own hearings. Drafts preserve testimony, exhibit references, progress and rulings when you leave and return. A running timer restores its deadline rather than starting over. Accepted or unresolved outcomes update the originating chat card.
 
@@ -105,7 +105,7 @@ After deployment:
 flutter run --dart-define=BACKEND_URL=https://YOUR_CLOUD_RUN_SERVICE_URL
 ```
 
-A reviewer enters a privately supplied demo code at **Us → AI demo access**. The server exchanges it for an expiring session, checks access and budgets, then calls Meta with its private key. Reviewers do not need their own Meta account. Codes must be shared privately, not committed with the app.
+A reviewer enters a privately supplied demo code at **Closer → AI demo access**. The server exchanges it for an expiring session, checks access and budgets, then calls Meta with its private key. Reviewers do not need their own Meta account. Codes must be shared privately, not committed with the app.
 
 Implemented controls include hashed invite/session tokens, eight-hour sessions, revocation, expiry, persistent per-invite/global call budgets, separate image budgets, request deduplication, rate limits and bounded simultaneous calls. These are safeguards rather than a dollar spending cap. Cloud deployment and multi-instance behavior still need verification.
 
@@ -125,7 +125,7 @@ The Dart package is `closer`. Android, iOS and macOS use `com.jcm.closer`; Fireb
 
 Firebase app authentication, permanent partner pairing, cloud chat, shared memories, live case synchronization, push notifications and opt-in location sharing are **not connected yet**. The secured AI proxy does not supply those features.
 
-The backend guide describes isolated resources within an existing Firebase/Google Cloud project. Its dedicated quota database must remain separate from existing application data. See [Firebase setup](docs/firebase-setup.md) and the [roadmap](ROADMAP.md) for the remaining work.
+The backend guide targets the existing iSee project `iseeapp-ddf3a`, using separate Closer backend resources. Deployment requires the project ID explicitly. Its dedicated quota database must remain separate from existing application data. See [Firebase setup](docs/firebase-setup.md) and the [roadmap](ROADMAP.md) for the remaining work.
 
 ## Repository layout
 

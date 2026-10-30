@@ -75,7 +75,7 @@ void main() {
       tester.widget<MaterialApp>(find.byType(MaterialApp)).title,
       'Closer',
     );
-    for (final label in ['Map', 'Court', 'Memories', 'Chat', 'Us']) {
+    for (final label in ['Map', 'Court', 'Memories', 'Chat', 'Closer']) {
       expect(find.text(label), findsWidgets);
     }
     await press(tester, 'Chat');
@@ -96,7 +96,7 @@ void main() {
     expect(find.byTooltip('Attach chat photo'), findsOneWidget);
     await press(tester, 'Memories');
     expect(find.text('Add a memory'), findsOneWidget);
-    await press(tester, 'Us');
+    await press(tester, 'Closer');
     expect(find.text('Our anniversary'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -275,7 +275,7 @@ void main() {
     await tester.pumpAndSettle();
     await expectLater(
       find.byType(CloserApp),
-      matchesGoldenFile('goldens/us-home.png'),
+      matchesGoldenFile('goldens/closer-home.png'),
     );
     expect(find.textContaining('Locations not connected'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -283,3 +283,4 @@ void main() {
     store.dispose();
   });
 }
+

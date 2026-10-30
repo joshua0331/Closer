@@ -4,7 +4,7 @@ Use one Firebase project for Android and iOS. Two phones install the same app bu
 
 ## Console setup
 
-1. Open https://console.firebase.google.com/ and select your existing project `iseeapp-ddf3a` (iseeapp), as requested. Add Closer as new app registrations; do not replace the iSee app entries. Applications in this project share Authentication, billing and other project resources.
+1. Open https://console.firebase.google.com/ and select the existing project iseeapp-ddf3a. Register Closer as separate Android/iOS apps using com.jcm.closer; keep existing iSee registrations. Authentication and billing are shared at project level. Keep Closer app records and backend quota resources separate from iSee data.
 2. Copy the Project ID from Project settings > General.
 3. Open Authentication > Get started > Sign-in method and enable Email/Password. Email-link sign-in is not needed for the first version.
 4. Open Firestore Database > Create database, choose Standard edition if asked, Production mode, and a suitable region near users. Keep access restricted until the app's membership rules are deployed.

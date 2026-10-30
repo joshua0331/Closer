@@ -67,7 +67,7 @@ def make_app(records=None, api_key=None, model=None, clock=None):
         yield
     app = FastAPI(title='Closer demo backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
-    @app.get('/healthz')
+    @app.get('/api/health')
     def health():
         try:
             app.state.security.policy()

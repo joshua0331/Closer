@@ -1,5 +1,5 @@
 param(
-    [string]$ProjectId = 'iseeapp-ddf3a',
+    [Parameter(Mandatory = $true)][string]$ProjectId,
     [string]$Region = 'asia-southeast1',
     [int]$MetaSecretVersion = 1
 )

@@ -5,7 +5,7 @@ Last updated: October 29, 2026. Checkboxes describe implementation status, not p
 ## 1. Foundation — implemented locally
 
 - [x] Closer branding, peach theme and Android/iOS display names.
-- [x] Map, Court, Memories, Chat and Us navigation.
+- [x] Map, Court, Memories, Chat and Closer navigation.
 - [x] Saved profile names and anniversary.
 - [x] Local text/photo chat, replies, heart reactions and court summons.
 - [x] Local photo memories and captions.

@@ -1,12 +1,12 @@
 # Closer hosted AI demo
 
-Status: hosted API implementation and local tests are ready. No service has been deployed, no live Meta call has been made, and iSee data/rules have not been changed. The selected project is iseeapp-ddf3a. Google Cloud CLI and the Meta secret still need setup.
+Status: hosted API implementation and local tests are ready. No service has been deployed, no live Meta call has been made, and iSee data/rules have not been changed. The selected project is iseeapp-ddf3a. Closer uses separate named backend resources; keep existing iSee data and rules unchanged. Google Cloud CLI and the Meta secret still need setup.
 
 ## What judges receive
 
 - The public source and setup instructions contain only the backend URL.
 - A judge receives a private app demo code through the submission's private instructions. It is not a Meta key and requires no external account.
-- Closer > Us > AI demo access exchanges the code for an eight-hour session kept only in memory. It is cleared on app close/expiry/disconnect.
+- Closer > Closer tab > AI demo access exchanges the code for an eight-hour session kept only in memory. It is cleared on app close/expiry/disconnect.
 - The server calls only Meta models. It keeps the Meta key in its environment, supplied by Secret Manager in Cloud Run.
 
 ## Access and usage controls
