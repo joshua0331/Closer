@@ -84,3 +84,5 @@ server/*.db-*
 **/*.sqlite3
 **/shared_prefs/
 **/app_flutter/
+
+.gradle-closer/

@@ -1,3 +1,5 @@
+> Current connected implementation: see [connected-app.md](connected-app.md). The backend is deployed; real accounts, pairing, shared chat/photos/locations and server-owned court state are implemented. Spark and Wonder were live-tested on October 31, 2026. Earlier local-only setup notes below describe the legacy development path.
+
 # Firebase setup for Closer — do this when ready
 
 Use one Firebase project for Android and iOS. Two phones install the same app but sign in to separate accounts. Do not create a separate Firebase project per phone.

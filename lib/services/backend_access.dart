@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 /// Revocable demo access, kept in memory. Never stores the Meta API key or code.
 class BackendAccess extends ChangeNotifier {
   BackendAccess({String? baseUrl, http.Client? client})
-    : baseUrl = baseUrl ?? const String.fromEnvironment('BACKEND_URL'),
+    : baseUrl = baseUrl ?? const String.fromEnvironment('BACKEND_URL', defaultValue: 'https://closer-demo-backend-97502564446.asia-southeast1.run.app'),
       _client = client ?? http.Client();
   static final instance = BackendAccess();
   final String baseUrl;

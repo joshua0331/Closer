@@ -13,3 +13,5 @@ server/*.db-*
 **/.env*
 **/*credentials*
 **/*secret*.json
+
+server/smoke_*.py

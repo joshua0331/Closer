@@ -1,3 +1,5 @@
+> Current connected implementation: see [connected-app.md](connected-app.md). The backend is deployed; real accounts, pairing, shared chat/photos/locations and server-owned court state are implemented. Spark and Wonder were live-tested on October 31, 2026. Earlier local-only setup notes below describe the legacy development path.
+
 # Closer hosted AI demo
 
 Status: hosted API implementation and local tests are ready. No service has been deployed, no live Meta call has been made, and iSee data/rules have not been changed. The selected project is iseeapp-ddf3a. Closer uses separate named backend resources; keep existing iSee data and rules unchanged. Google Cloud CLI and the Meta secret still need setup.

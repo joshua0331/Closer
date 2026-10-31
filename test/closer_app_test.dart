@@ -80,7 +80,7 @@ void main() {
     }
     await press(tester, 'Chat');
     await tester.enterText(find.byType(TextField), 'Thinking of you');
-    await tester.tap(find.byTooltip('Save local message'));
+    await tester.tap(find.byTooltip('Send message'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Message options'));
     await tester.pumpAndSettle();
@@ -90,7 +90,7 @@ void main() {
     await tester.pumpAndSettle();
     await press(tester, 'Reply');
     await tester.enterText(find.byType(TextField), 'See you soon');
-    await tester.tap(find.byTooltip('Save local message'));
+    await tester.tap(find.byTooltip('Send message'));
     await tester.pumpAndSettle();
     expect((store.messages.last['replyTo'] as Map)['text'], 'Thinking of you');
     expect(find.byTooltip('Attach chat photo'), findsOneWidget);

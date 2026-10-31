@@ -1,3 +1,11 @@
+import '../services/backend_access.dart';
+import 'shared_court.dart';
+
+import 'package:firebase_auth/firebase_auth.dart';
+
+import '../models/cloud_couple_store.dart';
+import 'live_couple_map.dart';
+
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -46,6 +54,25 @@ class _CoupleHomeState extends State<CoupleHome> {
   }
 
   Future<void> _profile() async {
+    if (store.online) {
+      final name = await showDialog<String>(
+        context: context,
+        builder: (_) => const _TextDialog(
+          title: 'Your Closer profile',
+          label: 'Your name',
+          description: 'Your partner chooses their own name on their phone.',
+          action: 'Save name',
+        ),
+      );
+      if (name == null || !mounted) return;
+      try {
+        store.yourName = name;
+        await store.save();
+      } catch (_) {
+        _notice('Could not save your name. Please retry.');
+      }
+      return;
+    }
     final names = await showDialog<List<String>>(
       context: context,
       builder: (_) => _ProfileDialog(
@@ -69,7 +96,7 @@ class _CoupleHomeState extends State<CoupleHome> {
       builder: (_) => const _TextDialog(
         title: 'Summon your partner',
         label: 'What would you like to talk about?',
-        description: 'This preview adds a court card to your local chat. No notification is sent.',
+        description: 'The summons appears in your shared chat. Push notifications are not enabled yet.',
         action: 'Add court summons',
       ),
     );
@@ -79,6 +106,18 @@ class _CoupleHomeState extends State<CoupleHome> {
   }
 
   Future<void> _openCourt(Map<String, dynamic> message) async {
+    if (store is CloudCoupleStore) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => SharedCourt(
+            store: store as CloudCoupleStore,
+            caseId: message['id'] as String,
+          ),
+        ),
+      );
+      await (store as CloudCoupleStore).refresh();
+      return;
+    }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => CourtExperience(
@@ -110,14 +149,14 @@ class _CoupleHomeState extends State<CoupleHome> {
         builder: (_) => const _TextDialog(
           title: 'A photo for your conversation',
           label: 'Caption (optional)',
-          description: 'This photo stays in your local Closer chat until online sharing is connected.',
+          description: 'This photo will be shared with your paired partner.',
           action: 'Add to chat',
           allowEmpty: true,
         ),
       );
       if (caption == null || !mounted) return;
       final directory = await getApplicationDocumentsDirectory();
-      final folder = await Directory('${directory.path}/us_chat')
+      final folder = await Directory('${directory.path}/closer_chat')
           .create(recursive: true);
       final path =
           '${folder.path}/${DateTime.now().microsecondsSinceEpoch}.jpg';
@@ -180,7 +219,9 @@ class _CoupleHomeState extends State<CoupleHome> {
   );
 
   Widget _chatEntry(Map<String, dynamic> entry) => Align(
-    alignment: Alignment.centerRight,
+    alignment: entry['sender'] == 'partner'
+        ? Alignment.centerLeft
+        : Alignment.centerRight,
     child: Container(
       constraints: const BoxConstraints(maxWidth: 420),
       margin: const EdgeInsets.only(left: 24, bottom: 12),
@@ -262,7 +303,9 @@ class _CoupleHomeState extends State<CoupleHome> {
                   PopupMenuItem(
                     value: 'heart',
                     child: Text(
-                      entry['hearted'] == true ? 'Remove heart' : 'Add a heart',
+                      (entry['heartedByMe'] ?? entry['hearted']) == true
+                          ? 'Remove heart'
+                          : 'Add a heart',
                     ),
                   ),
                   if ((entry['text'] as String).isNotEmpty)
@@ -300,7 +343,7 @@ class _CoupleHomeState extends State<CoupleHome> {
         builder: (_) => const _TextDialog(
           title: 'A moment worth keeping',
           label: 'Write a caption',
-          description: 'Your photo will be saved on this device only.',
+          description: 'This memory will be shared with your paired partner.',
           action: 'Keep memory',
         ),
       );
@@ -312,12 +355,7 @@ class _CoupleHomeState extends State<CoupleHome> {
           '${folder.path}/${DateTime.now().microsecondsSinceEpoch}.jpg';
       await image.saveTo(path);
       if (!mounted) return;
-      store.memories.insert(0, {
-        'path': path,
-        'caption': caption,
-        'createdAt': DateTime.now().toIso8601String(),
-      });
-      await store.save();
+      await store.addMemory(path, caption);
     } catch (_) {
       _notice('Could not add that photo. Check photo access and try again.');
     } finally {
@@ -381,14 +419,20 @@ class _CoupleHomeState extends State<CoupleHome> {
         onSelected: (index) => setState(() => _tab = index),
       ),
       body: _tab == 0
-          ? CoupleMap(
-              yourName: store.yourName,
-              partnerName: store.partnerName,
-              startedOn: store.relationshipStart,
-              onProfile: _profile,
-              onDate: _date,
-              onNotifications: _notifications,
-            )
+          ? store is CloudCoupleStore
+                ? LiveCoupleMap(
+                    store: store as CloudCoupleStore,
+                    onProfile: _profile,
+                    onDate: _date,
+                  )
+                : CoupleMap(
+                    yourName: store.yourName,
+                    partnerName: store.partnerName,
+                    startedOn: store.relationshipStart,
+                    onProfile: _profile,
+                    onDate: _date,
+                    onNotifications: _notifications,
+                  )
           : SafeArea(
               child: Center(
                 child: ConstrainedBox(
@@ -475,6 +519,15 @@ class _CoupleHomeState extends State<CoupleHome> {
   Widget _home() => ListView(
     padding: const EdgeInsets.all(24),
     children: [
+      if (store.online)
+        OutlinedButton.icon(
+          onPressed: () async {
+            BackendAccess.instance.disconnect();
+            await FirebaseAuth.instance.signOut();
+          },
+          icon: const Icon(Icons.logout),
+          label: const Text('Sign out'),
+        ),
       _heading(
         store.hasProfile
             ? '${store.yourName} & ${store.partnerName}'
@@ -489,15 +542,11 @@ class _CoupleHomeState extends State<CoupleHome> {
       const SizedBox(height: 16),
       _card(
         Icons.link,
-        store.hasProfile
-            ? 'Your preview profile'
-            : 'One connection. A shared space.',
-        'The online version will let you create accounts and pair once by invitation. Neither partner will need to create rooms.',
+        store.hasProfile ? 'Your profile' : 'One connection. A shared space.',
+        'Your accounts are paired. Messages and memories sync with your partner; no rooms to recreate.',
         action: FilledButton(
           onPressed: _profile,
-          child: Text(
-            store.hasProfile ? 'Edit preview names' : 'Set preview names',
-          ),
+          child: Text(store.hasProfile ? 'Edit your name' : 'Set your name'),
         ),
       ),
       _card(
@@ -512,7 +561,7 @@ class _CoupleHomeState extends State<CoupleHome> {
       _card(
         Icons.near_me_outlined,
         'Distance, when you both choose.',
-        'Distance unavailable. When connected, both partners can choose to share their location and pause sharing at any time.',
+        'Open Map to share your real location. Each partner opts in separately; last-known updates show when they were captured.',
       ),
       Row(
         children: [
@@ -574,7 +623,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                 child: Padding(
                   padding: EdgeInsets.all(24),
                   child: Text(
-                    'Your story starts here.\nTry a message or add a court summons.\nEntries stay on this device.',
+                    'Your story starts here.\nSend your partner a message, photo or court summons.',
                     textAlign: TextAlign.center,
                   ),
                 ),
@@ -642,7 +691,7 @@ class _CoupleHomeState extends State<CoupleHome> {
             IconButton.filled(
               onPressed: _send,
               icon: const Icon(Icons.arrow_upward),
-              tooltip: 'Save local message',
+              tooltip: 'Send message',
             ),
           ],
         ),
@@ -653,8 +702,14 @@ class _CoupleHomeState extends State<CoupleHome> {
   Future<void> _send() async {
     if (_message.text.trim().isEmpty) return;
     final text = _message.text;
-    _message.clear();
-    await store.addMessage(text, replyTo: _replyTo);
+    try {
+      await store.addMessage(text, replyTo: _replyTo);
+      if (!mounted) return;
+      _message.clear();
+    } catch (_) {
+      _notice('Message was not sent. Check your connection and retry.');
+      return;
+    }
     if (mounted) setState(() => _replyTo = null);
     _scrollChatToEnd();
   }
@@ -685,7 +740,17 @@ class _CoupleHomeState extends State<CoupleHome> {
           Text(entry['text'] as String),
           const SizedBox(height: 12),
           if (entry['status'] == 'closed')
-            Text('Our next step: ${entry['agreement']}')
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Our next step: ${entry['agreement']}'),
+                if (store.online)
+                  TextButton(
+                    onPressed: () => _openCourt(entry),
+                    child: const Text('View shared hearing record'),
+                  ),
+              ],
+            )
           else
             FilledButton.tonal(
               onPressed: () => _openCourt(entry),
@@ -718,7 +783,7 @@ class _CoupleHomeState extends State<CoupleHome> {
         _card(
           Icons.photo_camera_outlined,
           'Your first memory is waiting.',
-          'Choose a photo and add a caption. Preview photos are stored on this device.',
+          'Choose a photo and add a caption to your shared album.',
         ),
       for (final memory in store.memories)
         Card(
@@ -762,7 +827,7 @@ class _CoupleHomeState extends State<CoupleHome> {
         ),
       ),
       const Text(
-        'In this preview, both turns happen on this phone. Online hearings will wait for both partners to accept.',
+        'Both partners enter the same summons. Turns, deadlines and acceptances are synchronized by the server.',
       ),
       const SizedBox(height: 16),
       ClipRRect(

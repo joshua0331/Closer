@@ -9,6 +9,7 @@ class CoupleStore extends ChangeNotifier {
     _load();
     _restoreCourtNames();
   }
+  bool get online => false;
   final SharedPreferences preferences;
   String yourName = '';
   String partnerName = '';
@@ -121,6 +122,15 @@ class CoupleStore extends ChangeNotifier {
     });
     await save();
     return id;
+  }
+
+  Future<void> addMemory(String path, String caption) async {
+    memories.insert(0, {
+      'path': path,
+      'caption': caption,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
+    await save();
   }
 
   Future<void> toggleHeart(String id) {

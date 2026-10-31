@@ -1,3 +1,5 @@
+> Current connected implementation: see [connected-app.md](connected-app.md). The backend is deployed; real accounts, pairing, shared chat/photos/locations and server-owned court state are implemented. Spark and Wonder were live-tested on October 31, 2026. Earlier local-only setup notes below describe the legacy development path.
+
 # Couple Court
 
 A Flutter prototype with a pixel-art courtroom, Muse Image character generation and a multimodal Muse Spark judge for voluntary everyday disputes.

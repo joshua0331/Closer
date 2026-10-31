@@ -6,10 +6,11 @@ shipped in the app. Usage reservations are durable and occur before Meta calls.
 import hashlib
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from urllib.error import HTTPError, URLError
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from demo_security import AccessError, DemoAccess
 from demo_storage import make_records
@@ -90,6 +91,52 @@ def make_app(records=None, api_key=None, model=None, clock=None):
             return reply(error.status, {'error': error.message})
         except Exception:
             return reply(503, {'error': 'Demo access is temporarily unavailable.'})
+
+    def couple_data():
+        from couple_data import CoupleData
+        if not hasattr(app.state, 'couple_data'):
+            app.state.couple_data = CoupleData()
+        return app.state.couple_data
+
+    @app.get('/couple/court/{case_id}')
+    @app.post('/couple/court/{case_id}')
+    @app.get('/couple/state')
+    @app.post('/couple/action')
+    @app.post('/couple/photo')
+    @app.get('/couple/photo/{photo_id}')
+    async def shared_space(request: Request, photo_id: str = '', case_id: str = ''):
+        try:
+            header = request.headers.get('authorization', '')
+            if not header.startswith('Bearer '):
+                raise AccessError(401, 'Sign in to Closer.')
+            data = couple_data()
+            uid = await run_in_threadpool(data.user, header[7:])
+            await run_in_threadpool(data.admit, uid, request.method == 'POST' and request.url.path.endswith('/photo'))
+            if case_id:
+                from shared_court import update, model_review
+                body = None if request.method == 'GET' else await read_json(request, 16000)
+                if body is not None and (not isinstance(body, dict)):
+                    raise AccessError(400, 'Invalid hearing request.')
+                if body is not None and body.get('operation') in {'review', 'art'}:
+                    result = await run_in_threadpool(model_review, data, uid, case_id, body, app.state.meta_key,
+                        app.state.meta_model, app.state.security, request.headers.get('x-demo-session', ''), request.headers.get('x-request-id', ''))
+                else:
+                    result = await run_in_threadpool(update, data, uid, case_id, body)
+                result['serverNow'] = time.time()
+                return reply(200, result)
+            if request.method == 'GET' and photo_id:
+                raw = await run_in_threadpool(data.read_photo, uid, photo_id)
+                return Response(raw, media_type='image/jpeg' if raw.startswith(b'\xff') else 'image/png', headers={'Cache-Control': 'private, no-store'})
+            if request.method == 'GET':
+                result = await run_in_threadpool(data.state, uid)
+            else:
+                body = await read_json(request, 5700000 if request.url.path.endswith('/photo') else 16000)
+                result = await run_in_threadpool(data.photo if request.url.path.endswith('/photo') else data.action, uid, body)
+            return reply(200, result)
+        except AccessError as error:
+            return reply(error.status, {'error': error.message})
+        except Exception:
+            return reply(503, {'error': 'Could not sync your shared space. Please try again.'})
 
     @app.post('/judge')
     @app.post('/hearing')

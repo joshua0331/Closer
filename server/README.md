@@ -1,3 +1,5 @@
+> Current connected implementation: see [connected-app.md](../docs/connected-app.md). The backend is deployed; real accounts, pairing, shared chat/photos/locations and server-owned court state are implemented. Spark and Wonder were live-tested on October 31, 2026. Earlier local-only setup notes below describe the legacy development path.
+
 # Local Meta judge demo
 
 The judge uses Meta Model API directly: https://api.meta.ai/v1/responses, with muse-spark-1.3 by default. Only Meta Muse Spark variants can be selected at server startup. No Llama, Groq or non-Meta fallback is used.
