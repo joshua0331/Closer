@@ -1,4 +1,4 @@
-import 'dart:io';
+import '../services/photo_media.dart';
 
 import 'package:flutter/material.dart';
 
@@ -25,8 +25,8 @@ class CourtroomScene extends StatelessWidget {
                     fit: BoxFit.contain,
                     filterQuality: FilterQuality.none,
                   )
-                : Image.file(
-                    File(generatedScene!),
+                : photoImage(
+                    generatedScene!,
                     fit: BoxFit.contain,
                     filterQuality: FilterQuality.none,
                     errorBuilder: (_, error, stack) => const Center(

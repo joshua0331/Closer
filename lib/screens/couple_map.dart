@@ -498,7 +498,7 @@ class CoupleDock extends StatelessWidget {
   });
   final int selected;
   final ValueChanged<int> onSelected;
-  static const labels = ['Map', 'Court', 'Memories', 'Chat', 'Closer'];
+  static const labels = ['Map', 'Court', 'Memories', 'Chat', 'Us'];
   static const icons = [
     Icons.add_location_alt_outlined,
     Icons.gavel_rounded,

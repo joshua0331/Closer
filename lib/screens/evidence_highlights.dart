@@ -1,5 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
+
+import '../services/photo_media.dart';
 
 import 'package:flutter/material.dart';
 
@@ -56,7 +57,7 @@ class _EvidenceHighlightsState extends State<EvidenceHighlights> {
       _message = null;
     });
     try {
-      final bytes = await File(widget.path).readAsBytes();
+      final bytes = await readPhoto(widget.path);
       if (bytes.length > 1000000) {
         throw const JudgeException('Choose a photo smaller than 1 MB.');
       }
@@ -96,8 +97,8 @@ class _EvidenceHighlightsState extends State<EvidenceHighlights> {
         children: [
           Stack(
             children: [
-              Image.file(
-                File(widget.path),
+              photoImage(
+                widget.path,
                 width: double.infinity,
                 fit: BoxFit.fitWidth,
                 errorBuilder: (_, error, stack) =>

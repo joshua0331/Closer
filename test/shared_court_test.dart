@@ -18,7 +18,14 @@ class _User implements User {
 }
 
 class _Store extends CloudCoupleStore {
-  _Store(super.preferences, super.user, this.state);
+  _Store(
+    super.preferences,
+    User super.user,
+    this.state, {
+    bool guest = false,
+  }) : super(
+         roomSession: guest ? 'room_test_session' : null,
+       );
   Map<String, dynamic> state;
   final submissions = <Map<String, dynamic>>[];
   @override
@@ -60,6 +67,35 @@ Map<String, dynamic> _case() => {
   'approved': [],
 };
 void main() {
+  testWidgets(
+    'Guest hearing keeps long participant names within a phone viewport',
+    (tester) async {
+      tester.view.physicalSize = const Size(400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      SharedPreferences.setMockInitialValues({});
+      final data = _case();
+      data['names'] = ['A' * 50, 'B' * 50];
+      final store = _Store(
+        await SharedPreferences.getInstance(),
+        _User('a'),
+        data,
+        guest: true,
+      );
+      addTearDown(store.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SharedCourt(store: store, caseId: 'case1'),
+        ),
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Room chat'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('Shared hearing locks the other role out of a speaking turn', (
     tester,
   ) async {
@@ -76,10 +112,7 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(
-      find.text('Waiting for Alex to speak on their phone.'),
-      findsOneWidget,
-    );
+    expect(find.text('Waiting for Alex to take their turn.'), findsOneWidget);
     expect(find.widgetWithText(TextField, 'Your turn'), findsNothing);
     expect(store.submissions, isEmpty);
     await tester.pumpWidget(const SizedBox());
@@ -109,10 +142,7 @@ void main() {
     await tester.pump();
     expect(store.submissions.single['version'], 1);
     expect(store.submissions.single['text'], 'I did the dishes.');
-    expect(
-      find.text('Waiting for Sam to speak on their phone.'),
-      findsOneWidget,
-    );
+    expect(find.text('Waiting for Sam to take their turn.'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 }

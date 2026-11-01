@@ -2,6 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
+import '../services/photo_media.dart';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -10,14 +14,22 @@ import '../models/couple_store.dart';
 import '../services/backend_access.dart';
 
 class CloudCoupleStore extends CoupleStore {
-  CloudCoupleStore(super.preferences, this.user) {
+  CloudCoupleStore(
+    super.preferences,
+    this.user, {
+    this.courtOnly = false,
+    this.roomSession,
+    this.roomUid,
+  }) {
     messages.clear();
     memories.clear();
-    yourName = user.displayName ?? '';
+    yourName = user?.displayName ?? '';
     partnerName = '';
     relationshipStart = null;
   }
-  final User user;
+  final User? user;
+  final String? roomSession, roomUid;
+  final bool courtOnly;
   final _client = http.Client();
   Timer? _timer;
   bool _refreshing = false, _closed = false;
@@ -29,7 +41,7 @@ class CloudCoupleStore extends CoupleStore {
   @override
   bool get online => true;
   bool get paired => couple != null;
-  String get uid => user.uid;
+  String get uid => roomUid ?? user!.uid;
   Map<String, dynamic> get locations =>
       Map<String, dynamic>.from(couple?['locations'] as Map? ?? {});
   String? get partnerUid => (couple?['members'] as List?)
@@ -41,7 +53,7 @@ class CloudCoupleStore extends CoupleStore {
     String path, {
     Map<String, dynamic>? body,
   }) async {
-    final token = await user.getIdToken();
+    final token = roomSession ?? await user!.getIdToken();
     final uri = Uri.parse(BackendAccess.instance.url(path));
     final headers = {
       'Authorization': 'Bearer $token',
@@ -104,7 +116,7 @@ class CloudCoupleStore extends CoupleStore {
       couple = data['couple'] == null
           ? null
           : Map<String, dynamic>.from(data['couple'] as Map);
-      yourName = profile['name'] as String? ?? user.displayName ?? '';
+      yourName = profile['name'] as String? ?? user?.displayName ?? '';
       partnerName = couple == null
           ? ''
           : (couple!['names'] as Map)[partnerUid] as String? ?? 'Partner';
@@ -114,6 +126,7 @@ class CloudCoupleStore extends CoupleStore {
       final nextMessages = <Map<String, dynamic>>[];
       for (final raw in data['messages'] as List) {
         final item = Map<String, dynamic>.from(raw as Map);
+        if (courtOnly && item['kind'] != 'court') continue;
         item['sender'] = item['senderId'] == uid ? 'you' : 'partner';
         item['heartedByMe'] = (item['hearts'] as List? ?? []).contains(uid);
         item['hearted'] = (item['hearts'] as List? ?? []).isNotEmpty;
@@ -124,7 +137,7 @@ class CloudCoupleStore extends CoupleStore {
         nextMessages.add(item);
       }
       final nextMemories = <Map<String, dynamic>>[];
-      for (final raw in data['memories'] as List) {
+      for (final raw in (courtOnly ? [] : data['memories'] as List)) {
         final item = Map<String, dynamic>.from(raw as Map);
         if (item['photoId'] == null) continue;
         item['caption'] = item['text'];
@@ -151,6 +164,10 @@ class CloudCoupleStore extends CoupleStore {
   }
 
   Future<String> photoPath(String id) async {
+    if (kIsWeb) {
+      final response = await request('couple/photo/$id');
+      return 'data:image/jpeg;base64,${base64Encode(response.bodyBytes)}';
+    }
     final directory = await getApplicationDocumentsDirectory();
     final file = File('${directory.path}/closer_cloud/$uid/$id.jpg');
     if (!await file.exists()) {
@@ -162,7 +179,7 @@ class CloudCoupleStore extends CoupleStore {
   }
 
   Future<String> upload(String path) async {
-    final bytes = await File(path).readAsBytes();
+    final bytes = await readPhoto(path);
     if (bytes.length > 4000000) {
       throw Exception('Choose a photo smaller than 4 MB.');
     }

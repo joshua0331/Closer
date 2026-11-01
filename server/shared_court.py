@@ -61,7 +61,7 @@ def update(data, uid, case_id, body=None):
             state['joined']=list(set(state['joined']+[uid]))
             if len(state['joined'])==2 and state['deadline'] is None:state['deadline']=now+120
         else:
-            if len(state['joined'])!=2:
+            if len(state['joined'])!=2 and not (op=='evidence' and state['phase']==0):
                 raise AccessError(409,'Wait for both partners to enter court.')
             if body.get('version')!=state['version']:
                 raise AccessError(409,'The hearing changed. Refresh before continuing.')
@@ -83,7 +83,7 @@ def update(data, uid, case_id, body=None):
                 state['phase']+=1
                 state['deadline']=now+120 if state['phase'] in TURNS else None
             elif op=='evidence':
-                if phase not in TURNS or phase>8 or uid!=state['people'][TURNS[phase][0]] or now>=state['deadline']:
+                if phase != 0 and (phase not in TURNS or phase>8 or uid!=state['people'][TURNS[phase][0]] or now>=state['deadline']):
                     raise AccessError(403,'Add exhibits during your own opening, cross-examination or rebuttal turn.')
                 own=state['people'].index(uid)
                 if sum(e['owner']==own for e in state['evidence'])>=2:

@@ -1,5 +1,10 @@
 import 'dart:async';
-import 'dart:io';
+
+import 'package:flutter/services.dart';
+
+import 'room_chat.dart';
+
+import '../services/photo_media.dart';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -7,7 +12,7 @@ import 'package:image_picker/image_picker.dart';
 import '../models/cloud_couple_store.dart';
 import '../services/backend_access.dart';
 import '../services/judge_service.dart';
-import 'courtroom_scene.dart';
+import 'animated_courtroom.dart';
 import 'demo_access_page.dart';
 import 'evidence_highlights.dart';
 
@@ -49,9 +54,17 @@ const _titles = [
 ];
 
 class SharedCourt extends StatefulWidget {
-  const SharedCourt({super.key, required this.store, required this.caseId});
+  const SharedCourt({
+    super.key,
+    required this.store,
+    required this.caseId,
+    this.roomInvite,
+    this.onLobby,
+  });
   final CloudCoupleStore store;
   final String caseId;
+  final String? roomInvite;
+  final VoidCallback? onLobby;
   @override
   State<SharedCourt> createState() => _SharedCourtState();
 }
@@ -117,6 +130,9 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
       if (!_photos.containsKey(id)) {
         _photos[id] = await widget.store.photoPath(id);
       }
+    }
+    for (final id in (data['portraits'] as List? ?? []).whereType<String>()) {
+      _photos[id] ??= await widget.store.photoPath(id);
     }
     if (data['scenePhotoId'] != null) {
       final id = data['scenePhotoId'] as String;
@@ -206,6 +222,20 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   }
 
   Future<void> _art() async {
+    if (!BackendAccess.instance.connected && widget.store.roomSession != null) {
+      try {
+        await BackendAccess.instance.connectRoom(widget.store.roomSession!);
+      } catch (_) {
+        if (mounted) {
+          setState(
+            () => _error =
+                'Room AI access is unavailable or its allowance has expired.',
+          );
+        }
+        return;
+      }
+    }
+    if (!mounted) return;
     if (!BackendAccess.instance.connected) {
       await Navigator.push(
         context,
@@ -214,10 +244,43 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
       if (mounted) setState(() {});
       return;
     }
-    await _act('art');
+    final agreed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Send both portraits to Meta Muse Image?'),
+        content: const Text(
+          'This sends both selfies and the courtroom reference through the backend to Meta to generate your courtroom art. Confirm both people agree and have permission to share these photos.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Generate artwork'),
+          ),
+        ],
+      ),
+    );
+    if (agreed == true) await _act('art');
   }
 
   Future<void> _review() async {
+    if (!BackendAccess.instance.connected && widget.store.roomSession != null) {
+      try {
+        await BackendAccess.instance.connectRoom(widget.store.roomSession!);
+      } catch (_) {
+        if (mounted) {
+          setState(
+            () => _error =
+                'Room AI access is unavailable or its allowance has expired.',
+          );
+        }
+        return;
+      }
+    }
+    if (!mounted) return;
     if (!BackendAccess.instance.connected) {
       await Navigator.push(
         context,
@@ -231,7 +294,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
       builder: (context) => AlertDialog(
         title: const Text('Send the shared case to Meta?'),
         content: const Text(
-          'This sends both names, testimony, requested remedy and original evidence photos to Meta through Closer’s backend. Confirm you have permission. The proposed outcome is voluntary and photos cannot establish authenticity.',
+          'This sends both names, testimony, requested remedy and original evidence photos to Meta through Couple Court’s backend. Confirm you have permission. The proposed outcome is voluntary and photos cannot establish authenticity.',
         ),
         actions: [
           TextButton(
@@ -334,6 +397,13 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final ruling = c['ruling'] as Map?;
     return Scaffold(
       appBar: AppBar(
+        leading: widget.onLobby == null
+            ? null
+            : IconButton(
+                onPressed: widget.onLobby,
+                tooltip: 'Room lobby',
+                icon: const Icon(Icons.arrow_back),
+              ),
         title: const Text('Couple Court'),
         actions: [
           IconButton(
@@ -347,15 +417,101 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         padding: const EdgeInsets.all(20),
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 720),
+            constraints: const BoxConstraints(maxWidth: 1100),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                CourtroomScene(
-                  generatedScene: _photos[c['scenePhotoId']],
-                  names: List<String>.from(c['names'] as List),
-                  active: _turns[phase] ?? -1,
-                ),
+                if (widget.roomInvite != null)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Invite your partner',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          const Text(
+                            'Private one-use link · expires 24 hours after creation. Each of you keeps your own browser session.',
+                          ),
+                          SelectableText(widget.roomInvite!),
+                          TextButton.icon(
+                            onPressed: () async {
+                              await Clipboard.setData(
+                                ClipboardData(text: widget.roomInvite!),
+                              );
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Invite link copied'),
+                                  ),
+                                );
+                              }
+                            },
+                            icon: const Icon(Icons.copy),
+                            label: const Text('Copy invitation'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                AnimatedCourtroom(store: widget.store, hearing: c),
+                if (_photos[c['scenePhotoId']] != null)
+                  ExpansionTile(
+                    title: const Text('Our Muse Image courtroom artwork'),
+                    children: [
+                      photoImage(
+                        _photos[c['scenePhotoId']]!,
+                        fit: BoxFit.contain,
+                      ),
+                    ],
+                  ),
+                if (widget.store.roomSession != null) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      for (var i = 0; i < 2; i++)
+                        Expanded(
+                          child: Column(
+                            children: [
+                              if (_photos[(c['portraits'] as List? ??
+                                      [null, null])[i]] !=
+                                  null)
+                                ClipOval(
+                                  child: photoImage(
+                                    _photos[(c['portraits'] as List)[i]]!,
+                                    width: 56,
+                                    height: 56,
+                                    fit: BoxFit.cover,
+                                  ),
+                                )
+                              else
+                                const CircleAvatar(
+                                  radius: 28,
+                                  child: Icon(Icons.person_outline),
+                                ),
+                              Text(
+                                (c['names'] as List)[i] as String,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                  RoomChat(store: widget.store, initiallyExpanded: false),
+                  if (phase == 0)
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : _attach,
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                      label: const Text(
+                        'Add evidence before the hearing · up to 2 each',
+                      ),
+                    ),
+                ],
                 const SizedBox(height: 18),
                 Text(
                   c['topic'] as String,
@@ -370,7 +526,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                   ),
                 ),
                 Text(
-                  'You are the ${role == 0 ? 'claimant' : 'respondent'}. Both phones use the same hearing.',
+                  'You are the ${role == 0 ? 'claimant' : 'respondent'}. Both browsers use the same hearing.',
                 ),
                 if (_error != null)
                   Padding(
@@ -463,7 +619,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                     )
                   else
                     Text(
-                      'Waiting for ${(c['names'] as List)[_turns[phase]!]} to speak on their phone.',
+                      'Waiting for ${(c['names'] as List)[_turns[phase]!]} to take their turn.',
                     ),
                 ] else if ({9, 12, 16}.contains(phase)) ...[
                   const SizedBox(height: 14),
@@ -477,6 +633,8 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                     child: Text(
                       BackendAccess.instance.connected
                           ? 'Request ${phase == 16 ? 'Wonder appeal review' : 'Spark review'}'
+                          : widget.store.roomSession != null
+                          ? 'Connect room AI access'
                           : 'Connect private AI demo access',
                     ),
                   ),
@@ -525,6 +683,10 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                         ? 'Both partners accepted this proposal.'
                         : 'Closed without mutual acceptance.',
                   ),
+                if (widget.store.roomSession != null)
+                  SelectableText(
+                    'Room ID: ${widget.store.couple?['id'] ?? ''}',
+                  ),
                 const Divider(height: 32),
                 const Text(
                   'Evidence · original photos',
@@ -538,8 +700,8 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                       return ListTile(
                         leading: path == null
                             ? const Icon(Icons.image)
-                            : Image.file(
-                                File(path),
+                            : photoImage(
+                                path,
                                 width: 48,
                                 height: 48,
                                 fit: BoxFit.cover,

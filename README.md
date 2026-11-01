@@ -1,15 +1,29 @@
-<div align="center">
-  <img src="assets/branding/closer-logo.png" alt="Closer" width="520" />
-  <h1>Closer — Make room for each other.</h1>
-  <p>A peach-toned space for two: a real map, shared conversations, memories, and Couple Court.</p>
-  <p>Flutter · Android & iOS · Firebase Authentication · Meta Model API</p>
-</div>
+# Closer — a shared space for two
 
-Closer pairs two separate accounts into one lasting shared space. Chat and photo memories sync through an authenticated backend. The map uses real street tiles and opt-in GPS rather than sample markers. A court summons opens the same hearing on both phones, with server-controlled roles, turns, evidence, AI questions, a proposed remedy and one appeal.
+Closer brings a couple’s shared space into one app: an opt-in live map, private chat with photos and replies, a shared memories album, and Couple Court. The app is intended for Android and iOS phones.
 
-Built for the Meta Global AI Developer Hackathon 2026, under **Build for Your World**.
+Each person signs in on their own phone. One creates a one-time partner invitation; the other joins it. After pairing, messages, photos, memories, location updates and court summons stay in the same shared space, so the couple does not create a new room for each visit.
 
-[Roadmap](ROADMAP.md) · [Connected app](docs/connected-app.md) · [Court details](docs/couple-court.md) · [Backend setup](docs/hosted-demo.md)
+## Features
+
+- **Map:** OpenStreetMap tiles, distance between shared positions, and location sharing that each partner enables separately. Sharing stops when the app backgrounds.
+- **Chat:** Shared messages, photo attachments, replies, hearts and court summons.
+- **Memories:** A shared photo album with captions.
+- **Couple Court:** Shared cases with evidence, timed turns, questions, AI-proposed remedies and an appeal flow.
+- **Us:** Couple profile, relationship date, AI access and sign-out.
+
+## Run and build
+
+```powershell
+flutter pub get
+powershell -NoProfile -ExecutionPolicy Bypass -File tool/run-android.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tool/build-release.ps1
+```
+
+Build the iOS app on a Mac with Xcode: `flutter build ios --release`.
+
+The connected app uses Firebase Authentication for accounts and the Closer backend for paired data. Set `BACKEND_URL` when building your own backend deployment. Never include a Meta API key in the app; model requests stay on the backend.
+
 
 ## Why Closer
 
@@ -31,13 +45,13 @@ Updates are polled while the app is active: shared space every eight seconds, an
 
 ```sh
 flutter pub get
-flutter run
+powershell -NoProfile -ExecutionPolicy Bypass -File tool/run-android.ps1
 ```
 
 The public backend address is configured by default. Override it when hosting your own copy:
 
 ```sh
-flutter run --dart-define=BACKEND_URL=https://YOUR_BACKEND
+powershell -NoProfile -ExecutionPolicy Bypass -File tool/run-android.ps1 --dart-define=BACKEND_URL=https://YOUR_BACKEND
 ```
 
 On the original Windows development PC, a corrupted shared Gradle cache was found. The helper below uses an isolated, Git-ignored cache. Start an Android emulator or connect a phone first:
@@ -48,7 +62,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tool/run-android.ps1
 
 Firebase initialization uses the platform options in `lib/firebase_options.dart`. Firebase app identifiers/API configuration identify the app and are not the private Meta key. Android and iOS use **`com.jcm.closer`**; the Dart package is **`closer`**. For your own deployment, configure your own Firebase apps and backend rather than relying on the author's hosted service.
 
-iOS project files are included, but native build/signing/device validation still requires macOS/Xcode. Browser builds are not supported by the current local photo-cache implementation.
+iOS project files are included; building, signing and validating the iOS app requires macOS with Xcode.
 
 ## Pair two phones
 

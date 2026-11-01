@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -102,15 +103,24 @@ class _SignInState extends State<_SignIn> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Image.asset('assets/branding/closer-logo.png', height: 110),
+                Image.asset(
+                  'assets/branding/closer-logo.png',
+                  height: 112,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, error, stack) => const Text(
+                    'closer',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 48, fontWeight: FontWeight.w800),
+                  ),
+                ),
                 const SizedBox(height: 24),
                 Text(
-                  _create ? 'Start your shared space' : 'Welcome back',
+                  _create ? 'Join Closer' : 'Welcome back',
                   style: Theme.of(context).textTheme.headlineMedium,
                 ),
                 const SizedBox(height: 10),
                 const Text(
-                  'A real account for each of you. Pair once, then keep your conversation and memories together.',
+                  'One shared space for two. Pair with your partner to share your map, conversations, memories and Couple Court cases across your phones.',
                 ),
                 const SizedBox(height: 24),
                 TextField(
@@ -158,6 +168,40 @@ class _SignInState extends State<_SignIn> {
                   onPressed: _busy ? null : () => _submit(reset: true),
                   child: const Text('Forgot password?'),
                 ),
+                ...[
+                  const SizedBox(height: 16),
+                  const Text(
+                    'By continuing, you agree to Closer’s Terms of Service and Privacy Policy.',
+                    textAlign: TextAlign.center,
+                  ),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    children: [
+                      TextButton(
+                        onPressed: () => launchUrl(
+                          Uri.parse(
+                            'https://closer-court-ddf3a.web.app/terms.html',
+                          ),
+                        ),
+                        child: const Text('Terms of service'),
+                      ),
+                      TextButton(
+                        onPressed: () => launchUrl(
+                          Uri.parse(
+                            'https://closer-court-ddf3a.web.app/privacy.html',
+                          ),
+                        ),
+                        child: const Text('Privacy policy'),
+                      ),
+                      TextButton(
+                        onPressed: () => launchUrl(
+                          Uri.parse('mailto:joshuachristianmirang@gmail.com'),
+                        ),
+                        child: const Text('Help'),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

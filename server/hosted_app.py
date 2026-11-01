@@ -10,6 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from urllib.error import HTTPError, URLError
 from fastapi import FastAPI, Request
+from starlette.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from demo_security import AccessError, DemoAccess
@@ -68,6 +69,14 @@ def make_app(records=None, api_key=None, model=None, clock=None):
         yield
     app = FastAPI(title='Closer demo backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
+    # Browser requests still require Firebase identity and private AI access.
+    app.add_middleware(CORSMiddleware,
+        allow_origins=['https://closer-court-ddf3a.web.app',
+                       'https://closer-court-ddf3a.firebaseapp.com'],
+        allow_origin_regex=r'https?://(localhost|127\.0\.0\.1)(:[0-9]+)?',
+        allow_methods=['GET', 'POST'],
+        allow_headers=['Authorization', 'Content-Type', 'X-Demo-Session', 'X-Request-ID'])
+
     @app.get('/api/health')
     def health():
         try:
@@ -97,6 +106,39 @@ def make_app(records=None, api_key=None, model=None, clock=None):
         if not hasattr(app.state, 'couple_data'):
             app.state.couple_data = CoupleData()
         return app.state.couple_data
+
+    @app.post('/rooms/ai-session')
+    async def room_ai_session(request: Request):
+        try:
+            header = request.headers.get('authorization', '')
+            if not header.startswith('Bearer room_'):
+                raise AccessError(401, 'Enter your private room first.')
+            data = couple_data()
+            uid = await run_in_threadpool(data.user, header[7:])
+            await run_in_threadpool(data.admit, uid)
+            cid, room = await run_in_threadpool(data.member, uid)
+            if not room.get('roomOnly'):
+                raise AccessError(403, 'This feature is for guest court rooms.')
+            result = await run_in_threadpool(app.state.security.room_session, cid, room['expires'])
+            return reply(200, result)
+        except AccessError as error:
+            return reply(error.status, {'error': error.message})
+        except Exception:
+            return reply(503, {'error': 'AI access is unavailable. Your room and chat remain available.'})
+
+    @app.post('/rooms/create')
+    @app.post('/rooms/join')
+    async def enter_room(request: Request):
+        try:
+            body = await read_json(request, 1450000)
+            data = couple_data()
+            await run_in_threadpool(data.room_admit, request.client.host if request.client else 'unknown')
+            result = await run_in_threadpool(data.room_enter, body, request.url.path.endswith('/join'))
+            return reply(200, result)
+        except AccessError as error:
+            return reply(error.status, {'error': error.message})
+        except Exception:
+            return reply(503, {'error': 'Could not open the room. Please retry.'})
 
     @app.get('/couple/court/{case_id}')
     @app.post('/couple/court/{case_id}')

@@ -110,6 +110,26 @@ class DemoAccess:
             return {'session_token': token, 'expires_at': expires}, {key: invite, session_key: session}
         return self.records.transaction(['policy', key, session_key], update)
 
+    def room_session(self, room_id, expires_at):
+        """Public guest rooms share a small durable allowance; never reset global budgets."""
+        invite_id = digest('court-room:' + room_id)
+        key = 'invite:' + invite_id
+        token = secrets.token_urlsafe(32)
+        session_key = 'session:' + digest(token)
+        def update(state):
+            policy = self._check_policy(state['policy'])
+            invite = state[key] or {'label': 'Guest court room', 'enabled': True,
+                'expires_at': min(expires_at, policy['ends_at']), 'calls_limit': 8,
+                'images_limit': 1, 'calls_used': 0, 'images_used': 0,
+                'sessions_limit': 32, 'sessions_issued': 0}
+            if not invite['enabled'] or invite['expires_at'] <= self.clock() or invite['sessions_issued'] >= invite['sessions_limit']:
+                raise AccessError(403, 'This room has no AI sessions available.')
+            invite['sessions_issued'] += 1
+            expiry = min(self.clock() + 8 * 3600, invite['expires_at'])
+            return {'session_token': token, 'expires_at': expiry}, {
+                key: invite, session_key: {'invite': invite_id, 'expires_at': expiry, 'inflight': None}}
+        return self.records.transaction(['policy', key, session_key], update)
+
     def reserve(self, token, operation, request_id, fingerprint):
         if operation not in {'judge', 'hearing', 'characters', 'segment'}:
             raise AccessError(404, 'Unknown operation')

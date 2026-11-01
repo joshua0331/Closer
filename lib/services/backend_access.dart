@@ -8,7 +8,12 @@ import 'package:http/http.dart' as http;
 /// Revocable demo access, kept in memory. Never stores the Meta API key or code.
 class BackendAccess extends ChangeNotifier {
   BackendAccess({String? baseUrl, http.Client? client})
-    : baseUrl = baseUrl ?? const String.fromEnvironment('BACKEND_URL', defaultValue: 'https://closer-demo-backend-97502564446.asia-southeast1.run.app'),
+    : baseUrl =
+          baseUrl ??
+          const String.fromEnvironment(
+            'BACKEND_URL',
+            defaultValue: 'https://closer-demo-backend-97502564446.asia-southeast1.run.app',
+          ),
       _client = client ?? http.Client();
   static final instance = BackendAccess();
   final String baseUrl;
@@ -40,6 +45,38 @@ class BackendAccess extends ChangeNotifier {
         ? uri
         : uri.replace(path: '${uri.path}/');
     return root.resolve(path).toString();
+  }
+
+  Future<void> connectRoom(String roomSession) async {
+    final response = await _client
+        .post(
+          Uri.parse(url('rooms/ai-session')),
+          headers: {'Authorization': 'Bearer $roomSession'},
+        )
+        .timeout(const Duration(seconds: 25));
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw DemoAccessException(
+        data['error'] as String? ?? 'Room AI access is unavailable.',
+      );
+    }
+    final token = data['session_token'];
+    final expiry = data['expires_at'];
+    if (token is! String || token.length < 32 || expiry is! num) {
+      throw const DemoAccessException('Room AI access is unavailable.');
+    }
+    final expires = DateTime.fromMillisecondsSinceEpoch(
+      (expiry * 1000).round(),
+      isUtc: true,
+    );
+    if (!expires.isAfter(DateTime.now())) {
+      throw const DemoAccessException('Room AI access expired.');
+    }
+    _expiryTimer?.cancel();
+    _session = token;
+    _expires = expires;
+    _expiryTimer = Timer(expires.difference(DateTime.now()), disconnect);
+    notifyListeners();
   }
 
   Future<void> connect(String code) async {

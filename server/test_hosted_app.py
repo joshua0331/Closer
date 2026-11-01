@@ -22,6 +22,19 @@ class HostedTests(unittest.TestCase):
         self.invite = self.security.create_invite('Judge', calls=2, images=1)
         self.client = self.enterContext(TestClient(make_app(records=records, api_key='private-test-meta-key')))
 
+    def test_web_preflight_and_auth_are_separate(self):
+        headers = {'Origin': 'https://closer-court-ddf3a.web.app',
+                   'Access-Control-Request-Method': 'POST',
+                   'Access-Control-Request-Headers': 'authorization,x-demo-session,x-request-id,content-type'}
+        response = self.client.options('/couple/action', headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['access-control-allow-origin'], headers['Origin'])
+        response = self.client.get('/couple/state', headers={'Origin': headers['Origin']})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers['access-control-allow-origin'], headers['Origin'])
+        headers['Origin'] = 'https://untrusted.example'
+        self.assertEqual(self.client.options('/couple/action', headers=headers).status_code, 400)
+
     def connect(self):
         response = self.client.post('/auth/session', json={'code': self.invite['code']})
         self.assertEqual(response.status_code, 200)

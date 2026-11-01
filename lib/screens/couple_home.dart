@@ -6,18 +6,16 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../models/cloud_couple_store.dart';
 import 'live_couple_map.dart';
 
-import 'dart:io';
-
 import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../models/couple_store.dart';
 import 'court_experience.dart';
 import 'couple_map.dart';
 import 'demo_access_page.dart';
+import '../services/photo_media.dart';
 
 class CoupleHome extends StatefulWidget {
   const CoupleHome({super.key, required this.store});
@@ -155,12 +153,7 @@ class _CoupleHomeState extends State<CoupleHome> {
         ),
       );
       if (caption == null || !mounted) return;
-      final directory = await getApplicationDocumentsDirectory();
-      final folder = await Directory('${directory.path}/closer_chat')
-          .create(recursive: true);
-      final path =
-          '${folder.path}/${DateTime.now().microsecondsSinceEpoch}.jpg';
-      await image.saveTo(path);
+      final path = await savePickedPhoto(image, folderName: 'closer_chat');
       if (!mounted) return;
       await store.addMessage(caption, photoPath: path, replyTo: _replyTo);
       if (mounted) setState(() => _replyTo = null);
@@ -200,8 +193,8 @@ class _CoupleHomeState extends State<CoupleHome> {
         children: [
           Flexible(
             child: InteractiveViewer(
-              child: Image.file(
-                File(path),
+              child: photoImage(
+                path,
                 errorBuilder: (_, error, stack) => const Padding(
                   padding: EdgeInsets.all(24),
                   child: Text('Photo unavailable on this device.'),
@@ -254,8 +247,8 @@ class _CoupleHomeState extends State<CoupleHome> {
               onTap: () => _showChatPhoto(entry['photoPath'] as String),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
-                child: Image.file(
-                  File(entry['photoPath'] as String),
+                child: photoImage(
+                  entry['photoPath'] as String,
                   height: 200,
                   fit: BoxFit.cover,
                   errorBuilder: (_, error, stack) => const SizedBox(
@@ -277,7 +270,7 @@ class _CoupleHomeState extends State<CoupleHome> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                '${_timeLabel(entry['createdAt'] as String?)} · Local only',
+                '${_timeLabel(entry['createdAt'] as String?)} · ${store.online ? 'Sent' : 'Local only'}',
                 style: const TextStyle(fontSize: 10, color: Color(0xFF775B50)),
               ),
               const SizedBox(width: 6),
@@ -348,12 +341,7 @@ class _CoupleHomeState extends State<CoupleHome> {
         ),
       );
       if (caption == null || !mounted) return;
-      final directory = await getApplicationDocumentsDirectory();
-      final folder = await Directory('${directory.path}/couple_memories')
-          .create(recursive: true);
-      final path =
-          '${folder.path}/${DateTime.now().microsecondsSinceEpoch}.jpg';
-      await image.saveTo(path);
+      final path = await savePickedPhoto(image, folderName: 'couple_memories');
       if (!mounted) return;
       await store.addMemory(path, caption);
     } catch (_) {
@@ -396,7 +384,7 @@ class _CoupleHomeState extends State<CoupleHome> {
               ),
               SizedBox(height: 12),
               Text(
-                'Partner notifications will appear here when your accounts are connected. This preview does not send notifications.',
+                'Push notifications are not enabled yet. Your partner will see shared messages when they open Closer.',
                 textAlign: TextAlign.center,
               ),
             ],
@@ -439,19 +427,20 @@ class _CoupleHomeState extends State<CoupleHome> {
                   constraints: const BoxConstraints(maxWidth: 720),
                   child: Column(
                     children: [
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 9,
+                      if (!store.online)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 9,
+                          ),
+                          color: const Color(0xFFFFEADB),
+                          child: const Text(
+                            'LOCAL PREVIEW · No account or partner connection yet',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 11, color: slate),
+                          ),
                         ),
-                        color: const Color(0xFFFFEADB),
-                        child: const Text(
-                          'LOCAL PREVIEW · No account or partner connection yet',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 11, color: slate),
-                        ),
-                      ),
                       if (store.storageError != null)
                         Padding(
                           padding: const EdgeInsets.all(8),
@@ -757,10 +746,11 @@ class _CoupleHomeState extends State<CoupleHome> {
               child: const Text('Enter Couple Court'),
             ),
           const SizedBox(height: 8),
-          const Text(
-            'Local preview · partner has not been notified',
-            style: TextStyle(fontSize: 11),
-          ),
+          if (!store.online)
+            const Text(
+              'Local preview · partner has not been notified',
+              style: TextStyle(fontSize: 11),
+            ),
         ],
       ),
     ),
@@ -792,8 +782,8 @@ class _CoupleHomeState extends State<CoupleHome> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Image.file(
-                File(memory['path'] as String),
+              photoImage(
+                memory['path'] as String,
                 height: 280,
                 fit: BoxFit.cover,
                 errorBuilder: (_, error, stack) => const SizedBox(

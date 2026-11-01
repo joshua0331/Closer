@@ -73,7 +73,7 @@ void main() {
     await tester.pumpWidget(CloserApp(store: store));
     expect(
       tester.widget<MaterialApp>(find.byType(MaterialApp)).title,
-      'Closer',
+      'Couple Court',
     );
     for (final label in ['Map', 'Court', 'Memories', 'Chat', 'Closer']) {
       expect(find.text(label), findsWidgets);

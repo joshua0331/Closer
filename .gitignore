@@ -86,3 +86,6 @@ server/*.db-*
 **/app_flutter/
 
 .gradle-closer/
+
+# Firebase Hosting local deployment cache
+.firebase/

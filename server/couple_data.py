@@ -28,6 +28,11 @@ class CoupleData:
         self.bucket = storage.Client(project=self.project).bucket(os.environ.get('CLOSER_MEDIA_BUCKET', self.project + '-closer-media'))
 
     def user(self, token):
+        if isinstance(token, str) and token.startswith('room_'):
+            session = self.db.collection('court_room_sessions').document(hashlib.sha256(token.encode()).hexdigest()).get().to_dict()
+            if not session or session['expires'] <= time.time():
+                raise AccessError(401, 'Your room session expired. Create a new room or use your existing browser session.')
+            return session['uid']
         try:
             claims = id_token.verify_firebase_token(token, _CERT_REQUEST, audience=self.project)
             uid = claims['sub']
@@ -36,6 +41,107 @@ class CoupleData:
             return uid
         except Exception:
             raise AccessError(401, 'Please sign in again.')
+
+    def room_admit(self, client):
+        # Anonymous room creation/joining is bounded independently of AI budgets.
+        now = int(time.time())
+        refs = [(self.db.collection('court_room_limits').document('global'), 200),
+                (self.db.collection('court_room_limits').document(hashlib.sha256(client.encode()).hexdigest()), 12)]
+        @firestore.transactional
+        def reserve(tx):
+            records = [ref.get(transaction=tx).to_dict() or {} for ref, _ in refs]
+            for record, (_, limit) in zip(records, refs):
+                if record.get('day') == now // 86400 and record.get('count', 0) >= limit:
+                    raise AccessError(429, 'The room creation/join allowance has been reached. Try again tomorrow.')
+            for record, (ref, _) in zip(records, refs):
+                count = record.get('count', 0) if record.get('day') == now // 86400 else 0
+                tx.set(ref, {'day': now // 86400, 'count': count + 1})
+        reserve(self.db.transaction())
+
+    @staticmethod
+    def room_fields(body):
+        if not isinstance(body, dict):
+            raise AccessError(400, 'Enter your name and upload a selfie.')
+        name = clean(body.get('name'), 50)
+        if body.get('consent') is not True:
+            raise AccessError(400, 'Confirm you have permission to share this selfie.')
+        image = body.get('image_base64')
+        if not isinstance(image, str) or len(image) > 1400000:
+            raise AccessError(400, 'Use a JPEG or PNG selfie smaller than 1 MB.')
+        try:
+            raw = base64.b64decode(image, validate=True)
+        except Exception:
+            raise AccessError(400, 'Invalid selfie.')
+        if not raw or len(raw) > 1000000 or not (raw.startswith(b'\xff\xd8\xff') or raw.startswith(b'\x89PNG\r\n\x1a\n')):
+            raise AccessError(400, 'Use a JPEG or PNG selfie smaller than 1 MB.')
+        return name, raw
+
+    def room_enter(self, body, joining=False):
+        name, raw = self.room_fields(body)
+        token = 'room_' + secrets.token_urlsafe(32)
+        session_ref = self.db.collection('court_room_sessions').document(hashlib.sha256(token.encode()).hexdigest())
+        photo_id = secrets.token_hex(16)
+        now = time.time()
+        if joining:
+            code = clean(body.get('code'), 100)
+            invite_ref = self.db.collection('court_room_invites').document(hashlib.sha256(code.encode()).hexdigest())
+            invite = invite_ref.get().to_dict()
+            if not invite or invite.get('used') or invite['expires'] <= now:
+                raise AccessError(409, 'This room invitation has expired or its second seat is already taken.')
+            cid, uid = invite['roomId'], invite['guestId']
+            root = self.db.collection('closer_couples').document(cid)
+            # Upload only after validating the invitation; a losing concurrent join cleans up its blob.
+            blob = self.bucket.blob(f'{cid}/{photo_id}')
+            blob.upload_from_string(raw, content_type='image/jpeg' if raw.startswith(b'\xff') else 'image/png')
+            try:
+                @firestore.transactional
+                def join(tx):
+                    current = invite_ref.get(transaction=tx).to_dict()
+                    room = root.get(transaction=tx).to_dict()
+                    hearing_ref = root.collection('hearings').document('hearing')
+                    hearing = hearing_ref.get(transaction=tx).to_dict()
+                    if not current or current.get('used') or current['expires'] <= time.time() or not room or room.get('expires', 0) <= time.time():
+                        raise AccessError(409, 'This invitation is no longer available.')
+                    hearing['names'][1] = name
+                    hearing['portraits'][1] = photo_id
+                    hearing['version'] += 1
+                    tx.update(root, {f'names.{uid}': name, f'portraits.{uid}': photo_id, 'guestJoined': True})
+                    tx.set(self.db.collection('closer_profiles').document(uid), {'name': name, 'coupleId': cid})
+                    tx.set(root.collection('photos').document(photo_id), {'owner': uid})
+                    tx.set(hearing_ref, hearing)
+                    tx.update(invite_ref, {'used': True})
+                    tx.set(session_ref, {'uid': uid, 'expires': room['expires']})
+                    return room['expires']
+                expiry = join(self.db.transaction())
+            except Exception:
+                blob.delete()
+                raise
+            return {'session': token, 'uid': uid, 'roomId': cid, 'caseId': 'hearing', 'expires': expiry}
+        topic = clean(body.get('topic'), 1000)
+        root = self.db.collection('closer_couples').document()
+        cid = root.id
+        uid, guest = 'room_' + secrets.token_hex(16), 'room_' + secrets.token_hex(16)
+        code = secrets.token_urlsafe(24)
+        expiry = now + 7 * 86400
+        room = {'members': [uid, guest], 'names': {uid: name, guest: 'Your partner'},
+                'portraits': {uid: photo_id}, 'createdAt': datetime.now(timezone.utc).isoformat(),
+                'locations': {}, 'roomOnly': True, 'expires': expiry, 'guestJoined': False}
+        message = {'kind': 'court', 'text': topic, 'senderId': uid, 'status': 'open', 'createdAt': room['createdAt'], 'hearts': []}
+        from shared_court import initial
+        hearing = initial(room, message)
+        hearing['portraits'] = [photo_id, None]
+        self.bucket.blob(f'{cid}/{photo_id}').upload_from_string(raw, content_type='image/jpeg' if raw.startswith(b'\xff') else 'image/png')
+        batch = self.db.batch()
+        batch.set(root, room)
+        batch.set(self.db.collection('closer_profiles').document(uid), {'name': name, 'coupleId': cid})
+        batch.set(root.collection('photos').document(photo_id), {'owner': uid})
+        batch.set(root.collection('messages').document('hearing'), message)
+        batch.set(root.collection('hearings').document('hearing'), hearing)
+        batch.set(session_ref, {'uid': uid, 'expires': expiry})
+        batch.set(self.db.collection('court_room_invites').document(hashlib.sha256(code.encode()).hexdigest()),
+                  {'roomId': cid, 'guestId': guest, 'expires': now + 86400, 'used': False})
+        batch.commit()
+        return {'session': token, 'uid': uid, 'roomId': cid, 'caseId': 'hearing', 'invite': code, 'expires': expiry}
 
     def admit(self, uid, photo=False):
         ref = self.db.collection('closer_app_limits').document(uid)
@@ -59,6 +165,8 @@ class CoupleData:
         couple = self.db.collection('closer_couples').document(cid).get().to_dict()
         if not couple or uid not in couple['members']:
             raise AccessError(403, 'This shared space is unavailable.')
+        if couple.get('roomOnly') and couple.get('expires', 0) <= time.time():
+            raise AccessError(410, 'This court room has expired.')
         return cid, couple
 
     def state(self, uid):
@@ -77,6 +185,8 @@ class CoupleData:
         if not isinstance(body, dict):
             raise AccessError(400, 'Invalid request.')
         action = body.get('action')
+        if uid.startswith('room_') and (action != 'message' or body.get('summons')):
+            raise AccessError(403, 'This session is for your court room only.')
         profile_ref = self.db.collection('closer_profiles').document(uid)
         now = datetime.now(timezone.utc).isoformat()
         if action == 'profile':
