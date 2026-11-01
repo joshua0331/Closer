@@ -178,7 +178,12 @@ class CoupleData:
         def records(collection):
             docs = root.collection(collection).order_by('createdAt', direction=firestore.Query.DESCENDING).limit(150).stream()
             return [{'id': doc.id, **doc.to_dict()} for doc in docs]
-        return {'profile': profile, 'couple': {'id': cid, **couple},
+        avatars = {}
+        for member_id in couple.get('members', []):
+            member_profile = self.db.collection('closer_profiles').document(member_id).get().to_dict() or {}
+            if member_profile.get('avatarPhotoId'):
+                avatars[member_id] = member_profile['avatarPhotoId']
+        return {'profile': profile, 'couple': {'id': cid, **couple, 'avatars': avatars},
                 'messages': list(reversed(records('messages'))), 'memories': records('memories')}
 
     def action(self, uid, body):
@@ -191,7 +196,17 @@ class CoupleData:
         now = datetime.now(timezone.utc).isoformat()
         if action == 'profile':
             name = clean(body.get('name'), 50)
-            profile_ref.set({'name': name}, merge=True)
+            update = {'name': name}
+            if body.get('avatarPhotoId') is not None:
+                avatar_id = clean(body.get('avatarPhotoId'), 32)
+                if not re_photo(avatar_id):
+                    raise AccessError(400, 'Invalid profile photo.')
+                photo_ref = self.db.collection('closer_couples').document(self.member(uid)[0]).collection('photos').document(avatar_id)
+                photo = photo_ref.get().to_dict() or {}
+                if photo.get('owner') != uid:
+                    raise AccessError(403, 'You can only use a photo you uploaded.')
+                update['avatarPhotoId'] = avatar_id
+            profile_ref.set(update, merge=True)
             profile = profile_ref.get().to_dict()
             if profile.get('coupleId'):
                 cid, _ = self.member(uid)

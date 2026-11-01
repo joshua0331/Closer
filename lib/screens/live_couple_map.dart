@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'
@@ -8,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/cloud_couple_store.dart';
+import '../services/photo_media.dart';
 import 'location_settings_page.dart';
 import 'couple_map.dart' show peach, ivory, slate;
 
@@ -17,9 +19,11 @@ class LiveCoupleMap extends StatefulWidget {
     required this.store,
     required this.onProfile,
     required this.onDate,
+    required this.onAvatar,
   });
   final CloudCoupleStore store;
   final VoidCallback onProfile, onDate;
+  final Future<String?> Function() onAvatar;
   @override
   State<LiveCoupleMap> createState() => _LiveCoupleMapState();
 }
@@ -31,11 +35,13 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
   bool _sharing = false, _busy = false, _tileError = false;
   String? _error;
   DateTime? _lastSent;
+  Set<gm.Marker> _markers = {};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.store.addListener(_refreshMarkers);
     WidgetsBinding.instance.addPostFrameCallback((_) => _restoreSharing());
   }
 
@@ -51,8 +57,99 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.store.removeListener(_refreshMarkers);
     _position?.cancel();
     super.dispose();
+  }
+
+  Future<gm.BitmapDescriptor> _avatarIcon(
+    String? path,
+    String name,
+    bool self,
+  ) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    final tint = ui.Paint()
+      ..color = self ? const Color(0xFFF18F77) : const Color(0xFF78AFA5);
+    canvas.drawCircle(const ui.Offset(48, 48), 47, tint);
+    if (path != null) {
+      try {
+        final codec = await ui.instantiateImageCodec(
+          await readPhoto(path),
+          targetWidth: 84,
+          targetHeight: 84,
+        );
+        final frame = await codec.getNextFrame();
+        canvas.save();
+        canvas.clipPath(
+          ui.Path()..addOval(const ui.Rect.fromLTWH(6, 6, 84, 84)),
+        );
+        canvas.drawImageRect(
+          frame.image,
+          ui.Rect.fromLTWH(
+            0,
+            0,
+            frame.image.width.toDouble(),
+            frame.image.height.toDouble(),
+          ),
+          const ui.Rect.fromLTWH(6, 6, 84, 84),
+          ui.Paint(),
+        );
+        canvas.restore();
+      } catch (_) {}
+    } else {
+      final builder = ui.ParagraphBuilder(
+        ui.ParagraphStyle(fontSize: 42, textAlign: ui.TextAlign.center),
+      );
+      builder.pushStyle(ui.TextStyle(color: const Color(0xFFFFFFFF)));
+      builder.addText(name.isEmpty ? '?' : name.characters.first.toUpperCase());
+      final text = builder.build()
+        ..layout(const ui.ParagraphConstraints(width: 96));
+      canvas.drawParagraph(text, const ui.Offset(0, 20));
+    }
+    final image = await recorder.endRecording().toImage(96, 96);
+    final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!
+        .buffer
+        .asUint8List();
+    return gm.BitmapDescriptor.bytes(bytes, imagePixelRatio: 2);
+  }
+
+  Future<void> _refreshMarkers() async {
+    final locations = widget.store.locations;
+    final me = point(locations[widget.store.uid]);
+    final partner = point(locations[widget.store.partnerUid]);
+    final next = <gm.Marker>{};
+    if (me != null)
+      next.add(
+        gm.Marker(
+          markerId: const gm.MarkerId('self'),
+          position: me,
+          icon: await _avatarIcon(
+            widget.store.avatarPath,
+            widget.store.yourName,
+            true,
+          ),
+          onTap: () =>
+              _map?.animateCamera(gm.CameraUpdate.newLatLngZoom(me, 15)),
+          infoWindow: gm.InfoWindow(title: widget.store.yourName),
+        ),
+      );
+    if (partner != null)
+      next.add(
+        gm.Marker(
+          markerId: const gm.MarkerId('partner'),
+          position: partner,
+          icon: await _avatarIcon(
+            widget.store.partnerAvatarPath,
+            widget.store.partnerName,
+            false,
+          ),
+          onTap: () =>
+              _map?.animateCamera(gm.CameraUpdate.newLatLngZoom(partner, 15)),
+          infoWindow: gm.InfoWindow(title: widget.store.partnerName),
+        ),
+      );
+    if (mounted) setState(() => _markers = next);
   }
 
   @override
@@ -244,6 +341,8 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
           sharing: _sharing,
           busy: _busy,
           onProfile: widget.onProfile,
+          avatarPath: widget.store.avatarPath,
+          onAvatar: widget.onAvatar,
           onShareChanged: (enabled) async {
             if (enabled) {
               await _start();
@@ -276,6 +375,19 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
     return minutes < 1 ? 'just now' : '$minutes min ago';
   }
 
+  Future<void> _remindPartner() async {
+    final name = widget.store.partnerName.trim().isEmpty
+        ? 'your partner'
+        : widget.store.partnerName.trim();
+    await widget.store.addMessage(
+      'Location reminder: please share your location when you’re comfortable. You can turn it on in Closer Settings.',
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Location reminder sent to $name in chat.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = widget.store, locations = widget.store.locations;
@@ -305,10 +417,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
           myLocationButtonEnabled: false,
           zoomControlsEnabled: false,
           onMapCreated: (controller) => _map = controller,
-          markers: {
-            if (me != null) _marker(me, store.yourName, true),
-            if (partner != null) _marker(partner, store.partnerName, false),
-          },
+          markers: _markers,
           polylines: {
             if (me != null && partner != null)
               gm.Polyline(
@@ -316,7 +425,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
                 points: [me, partner],
                 color: peach,
                 width: 4,
-              patterns: [gm.PatternItem.dot, gm.PatternItem.gap(8)],
+                patterns: [gm.PatternItem.dot, gm.PatternItem.gap(8)],
               ),
           },
         ),
@@ -373,7 +482,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
           Positioned(
             left: 20,
             right: 20,
-            bottom: 112,
+            bottom: 164,
             child: Card(
               color: ivory,
               child: Padding(
@@ -393,10 +502,23 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
                         ),
                       ),
                     if (partner == null)
-                      Text(
-                        '${store.partnerName} has not shared a location.',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: slate),
+                      Column(
+                        children: [
+                          Text(
+                            '${store.partnerName.isEmpty ? 'Your partner' : store.partnerName} hasn’t shared a location.',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: slate),
+                          ),
+                          TextButton.icon(
+                            onPressed: _remindPartner,
+                            icon: const Icon(
+                              Icons.notifications_active_outlined,
+                            ),
+                            label: Text(
+                              'Remind ${store.partnerName.isEmpty ? 'partner' : store.partnerName} to share',
+                            ),
+                          ),
+                        ],
                       ),
                     if (_tileError)
                       const Text(
@@ -424,15 +546,4 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
           foregroundColor: slate,
         ),
       );
-
-  gm.Marker _marker(gm.LatLng point, String name, bool me) => gm.Marker(
-    markerId: gm.MarkerId(me ? 'self' : 'partner'),
-    position: point,
-    icon: gm.BitmapDescriptor.defaultMarkerWithHue(
-      me ? gm.BitmapDescriptor.hueOrange : gm.BitmapDescriptor.hueAzure,
-    ),
-    infoWindow: gm.InfoWindow(
-      title: name.isEmpty ? (me ? 'You' : 'Partner') : name,
-    ),
-  );
 }

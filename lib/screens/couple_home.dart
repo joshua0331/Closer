@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image_cropper/image_cropper.dart';
 
 import '../models/couple_store.dart';
 import 'court_experience.dart';
@@ -82,6 +83,84 @@ class _CoupleHomeState extends State<CoupleHome> {
     store.yourName = names[0];
     store.partnerName = names[1];
     await store.save();
+  }
+
+  Future<String?> _uploadAvatar() async {
+    if (store is! CloudCoupleStore) {
+      _notice('Profile photos need an online paired account.');
+      return null;
+    }
+    final image = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 640,
+      maxHeight: 640,
+      imageQuality: 82,
+    );
+    if (image == null) return null;
+    try {
+      final cropped = await ImageCropper().cropImage(
+        sourcePath: image.path,
+        aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+        compressQuality: 88,
+        uiSettings: [
+          AndroidUiSettings(
+            toolbarTitle: 'Crop profile photo',
+            toolbarColor: const Color(0xFFFFE9DA),
+            toolbarWidgetColor: const Color(0xFF663621),
+            activeControlsWidgetColor: const Color(0xFFF18F77),
+            lockAspectRatio: false,
+            aspectRatioPresets: [
+              CropAspectRatioPreset.square,
+              CropAspectRatioPreset.original,
+            ],
+          ),
+          IOSUiSettings(
+            title: 'Crop profile photo',
+            aspectRatioLockEnabled: false,
+          ),
+        ],
+      );
+      if (cropped == null || !mounted) return null;
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Use this profile photo?'),
+          content: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: photoImage(
+              cropped.path,
+              width: 240,
+              height: 240,
+              fit: BoxFit.cover,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Choose again'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Confirm photo'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return null;
+      final path = await savePickedPhoto(
+        XFile(cropped.path),
+        folderName: 'closer_avatar',
+      );
+      final cloud = store as CloudCoupleStore;
+      await cloud.saveAvatar(path);
+      if (mounted) setState(() {});
+      return cloud.avatarPath;
+    } catch (error) {
+      _notice(
+        'Profile photo could not be saved: ${error.toString().replaceFirst('Exception: ', '')}',
+      );
+      return null;
+    }
   }
 
   Future<void> _summon() async {
@@ -410,6 +489,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                     store: store as CloudCoupleStore,
                     onProfile: _profile,
                     onDate: _date,
+                    onAvatar: _uploadAvatar,
                   )
                 : CoupleMap(
                     yourName: store.yourName,

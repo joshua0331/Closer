@@ -35,6 +35,7 @@ class CloudCoupleStore extends CoupleStore {
   bool _refreshing = false, _closed = false;
   Map<String, dynamic>? couple;
   Map<String, dynamic> profile = {};
+  String? avatarPath, partnerAvatarPath;
   @override
   List<Map<String, dynamic>> get courtHistory => const [];
 
@@ -116,6 +117,16 @@ class CloudCoupleStore extends CoupleStore {
       couple = data['couple'] == null
           ? null
           : Map<String, dynamic>.from(data['couple'] as Map);
+      final avatarIds = Map<String, dynamic>.from(
+        couple?['avatars'] as Map? ?? {},
+      );
+      avatarPath = profile['avatarPhotoId'] is String
+          ? await photoPath(profile['avatarPhotoId'] as String)
+          : null;
+      final partnerPhoto = avatarIds[partnerUid];
+      partnerAvatarPath = partnerPhoto is String
+          ? await photoPath(partnerPhoto)
+          : null;
       yourName = profile['name'] as String? ?? user?.displayName ?? '';
       partnerName = couple == null
           ? ''
@@ -214,6 +225,12 @@ class CloudCoupleStore extends CoupleStore {
         'date': relationshipStart!.toIso8601String(),
       });
     }
+    await refresh();
+  }
+
+  Future<void> saveAvatar(String path) async {
+    final id = await upload(path);
+    await action({'action': 'profile', 'name': yourName, 'avatarPhotoId': id});
     await refresh();
   }
 
