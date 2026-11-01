@@ -4,6 +4,12 @@
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Closer shares your location with your paired partner only when you choose to share.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Closer can keep sharing your location with your paired partner in the background while you have location sharing turned on. You can stop sharing at any time in Settings.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
