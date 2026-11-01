@@ -6,9 +6,12 @@ ThemeData buildCloserTheme() => ThemeData(
   colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFF18F77)),
   scaffoldBackgroundColor: const Color(0xFFFFF9F0),
   appBarTheme: const AppBarTheme(
-    backgroundColor: Color(0xFFFFF9F0),
+    backgroundColor: Colors.transparent,
     foregroundColor: Color(0xFF424A52),
     centerTitle: true,
+    elevation: 0,
+    scrolledUnderElevation: 0,
+    surfaceTintColor: Colors.transparent,
   ),
   cardTheme: CardThemeData(
     color: const Color(0xFFFFFDF9),

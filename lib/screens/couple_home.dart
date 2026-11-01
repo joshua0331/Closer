@@ -399,9 +399,7 @@ class _CoupleHomeState extends State<CoupleHome> {
     listenable: store,
     builder: (context, _) => Scaffold(
       extendBody: _tab == 0,
-      appBar: _tab == 0
-          ? null
-          : AppBar(title: Text('Closer · ${CoupleDock.labels[_tab]}')),
+      appBar: null,
       bottomNavigationBar: CoupleDock(
         selected: _tab,
         onSelected: (index) => setState(() => _tab = index),
@@ -803,60 +801,314 @@ class _CoupleHomeState extends State<CoupleHome> {
     ],
   );
 
-  Widget _court() => ListView(
-    padding: const EdgeInsets.all(24),
-    children: [
-      _heading('Couple Court', 'A softer place to settle your differences.'),
-      _card(
-        Icons.gavel,
-        'Speak. Listen. Find a next step.',
-        'A pixel-art courtroom with evidence, timed questions, rebuttals, a Meta AI judge, compensation requests and appeals.',
-        action: FilledButton(
-          onPressed: _summon,
-          child: const Text('Summon partner'),
-        ),
+  Widget _court() {
+    final cases = store.messages
+        .where((message) => message['kind'] == 'court')
+        .toList()
+        .reversed
+        .toList();
+    final history = store.courtHistory.where(
+      (record) => !store.messages.any(
+        (message) =>
+            message['recordId'] != null && message['recordId'] == record['id'],
       ),
-      const Text(
-        'Both partners enter the same summons. Turns, deadlines and acceptances are synchronized by the server.',
-      ),
-      const SizedBox(height: 16),
-      ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: Image.asset(
-          'assets/court/courtroom.png',
-          filterQuality: FilterQuality.none,
+    );
+
+    return Stack(
+      children: [
+        const Positioned.fill(
+          child: CustomPaint(painter: _CourtBackdropPainter()),
         ),
-      ),
-      const SizedBox(height: 24),
-      Text('Your cases', style: Theme.of(context).textTheme.titleLarge),
-      const SizedBox(height: 12),
-      if (!store.messages.any((m) => m['kind'] == 'court'))
-        const Text('No cases yet. Start with something small.'),
-      for (final entry
-          in store.messages
-              .where((m) => m['kind'] == 'court')
-              .toList()
-              .reversed)
-        _summonsCard(entry),
-      for (final record in store.courtHistory.where(
-        (record) => !store.messages.any(
-          (message) =>
-              message['recordId'] != null &&
-              message['recordId'] == record['id'],
-        ),
-      ))
-        Card(
-          child: ListTile(
-            leading: const Icon(Icons.history),
-            title: Text(record['topic'] as String? ?? 'Previous case'),
-            subtitle: Text(
-              '${record['agreement']}\n${record['practice'] == true ? 'Practice' : 'Meta judge'} · saved on this device',
+        ListView(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Couple Court',
+                        style: Theme.of(context).textTheme.headlineMedium
+                            ?.copyWith(
+                              color: const Color(0xFF542819),
+                              fontWeight: FontWeight.w800,
+                              fontSize: 34,
+                            ),
+                      ),
+                      Container(
+                        margin: const EdgeInsets.only(top: 4, bottom: 10),
+                        width: 260,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFB99D),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      const Text(
+                        'A softer place to settle your differences.',
+                        style: TextStyle(
+                          fontSize: 17,
+                          color: Color(0xFF663621),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Icon(
+                    Icons.favorite_border_rounded,
+                    size: 45,
+                    color: Color(0xFFEF8057),
+                  ),
+                ),
+              ],
             ),
-            isThreeLine: true,
-          ),
+            const SizedBox(height: 26),
+            Container(
+              padding: const EdgeInsets.fromLTRB(26, 25, 26, 26),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFAF5).withValues(alpha: .97),
+                borderRadius: BorderRadius.circular(38),
+                border: Border.all(color: const Color(0xFFFFD5C1), width: 1.5),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x18B76140),
+                    blurRadius: 22,
+                    offset: Offset(0, 7),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(
+                    Icons.gavel_rounded,
+                    size: 54,
+                    color: Color(0xFFF18A5B),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Speak. Listen. Find a next step.',
+                    style: TextStyle(
+                      fontSize: 25,
+                      height: 1.2,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF542819),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'A pixel-art courtroom with evidence, timed questions, rebuttals, a Meta AI judge, compensation requests and appeals.',
+                    style: TextStyle(
+                      fontSize: 16,
+                      height: 1.45,
+                      color: Color(0xFF663621),
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    width: 260,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFFFA477), Color(0xFFFF8056)],
+                        ),
+                        borderRadius: BorderRadius.circular(36),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x30E66D45),
+                            blurRadius: 12,
+                            offset: Offset(0, 5),
+                          ),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(36),
+                          onTap: _summon,
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(
+                              horizontal: 24,
+                              vertical: 17,
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  'Summon partner',
+                                  style: TextStyle(
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                SizedBox(width: 12),
+                                Icon(
+                                  Icons.chevron_right_rounded,
+                                  color: Colors.white,
+                                  size: 28,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 24, 8, 24),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 7,
+                    height: 58,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFC2A7),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  const Expanded(
+                    child: Text(
+                      'Both partners enter the same summons. Turns, deadlines and acceptances are synchronized by the server.',
+                      style: TextStyle(
+                        fontSize: 15,
+                        height: 1.45,
+                        color: Color(0xFF663621),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF9F3).withValues(alpha: .96),
+                borderRadius: BorderRadius.circular(30),
+                border: Border.all(color: const Color(0xFFFFD8C5), width: 1.5),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.info_outline_rounded,
+                        size: 35,
+                        color: Color(0xFFF18A5B),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Text(
+                          'Your cases',
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(
+                                color: const Color(0xFF542819),
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                      if (cases.isNotEmpty)
+                        Text(
+                          '${cases.length}',
+                          style: const TextStyle(
+                            color: Color(0xFFB85F41),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                    ],
+                  ),
+                  if (cases.isEmpty && history.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(left: 51, top: 4),
+                      child: Text(
+                        'No cases yet. Start with something small.',
+                        style: TextStyle(color: Color(0xFF663621)),
+                      ),
+                    ),
+                  for (final entry in cases) _summonsCard(entry),
+                  for (final record in history)
+                    ListTile(
+                      contentPadding: const EdgeInsets.only(left: 50, right: 0),
+                      leading: const Icon(
+                        Icons.history,
+                        color: Color(0xFFB85F41),
+                      ),
+                      title: Text(
+                        record['topic'] as String? ?? 'Previous case',
+                      ),
+                      subtitle: Text(
+                        '${record['agreement']} · ${record['practice'] == true ? 'Practice' : 'Meta judge'}',
+                      ),
+                      isThreeLine: false,
+                    ),
+                ],
+              ),
+            ),
+          ],
         ),
-    ],
-  );
+      ],
+    );
+  }
+}
+
+class _CourtBackdropPainter extends CustomPainter {
+  const _CourtBackdropPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = const Color(0xFFFFE7D9);
+    final top = Path()
+      ..moveTo(0, 0)
+      ..lineTo(size.width * .34, 0)
+      ..cubicTo(
+        size.width * .31,
+        size.height * .12,
+        size.width * .18,
+        size.height * .10,
+        0,
+        size.height * .21,
+      )
+      ..close();
+    canvas.drawPath(top, paint);
+
+    final bottomPaint = Paint()..color = const Color(0xFFFFD7C0);
+    final bottom = Path()
+      ..moveTo(0, size.height * .88)
+      ..cubicTo(
+        size.width * .18,
+        size.height * .93,
+        size.width * .22,
+        size.height * .85,
+        size.width * .42,
+        size.height * .91,
+      )
+      ..cubicTo(
+        size.width * .62,
+        size.height * .97,
+        size.width * .76,
+        size.height * .86,
+        size.width,
+        size.height * .91,
+      )
+      ..lineTo(size.width, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(bottom, bottomPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _ProfileDialog extends StatefulWidget {
