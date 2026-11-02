@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/cloud_couple_store.dart';
 import '../services/backend_access.dart';
+import '../services/court_performance.dart';
 import '../services/judge_service.dart';
 import 'animated_courtroom.dart';
 import 'demo_access_page.dart';
@@ -74,7 +75,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   double _clockOffset = 0;
   final _text = TextEditingController(), _caption = TextEditingController();
   Timer? _poll, _clock;
-  bool _busy = false, _loading = false;
+  bool _busy = false, _loading = false, _inCourtMode = false;
   String? _error;
   final Map<String, String> _photos = {};
   @override
@@ -95,6 +96,11 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     _clock?.cancel();
     _text.dispose();
     _caption.dispose();
+    unawaited(SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]));
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     super.dispose();
   }
 
@@ -139,6 +145,30 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
       _photos[id] ??= await widget.store.photoPath(id);
     }
     if (!mounted) return;
+    final entered =
+        (data['phase'] as int) > 0 ||
+        (data['joined'] as List).contains(widget.store.uid);
+    if (entered != _inCourtMode) {
+      _inCourtMode = entered;
+      unawaited(
+        SystemChrome.setPreferredOrientations(
+          entered
+              ? const [
+                  DeviceOrientation.landscapeLeft,
+                  DeviceOrientation.landscapeRight,
+                ]
+              : const [
+                  DeviceOrientation.portraitUp,
+                  DeviceOrientation.portraitDown,
+                ],
+        ),
+      );
+      unawaited(
+        SystemChrome.setEnabledSystemUIMode(
+          entered ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+        ),
+      );
+    }
     setState(() {
       _case = data;
       if (data['serverNow'] is num) {
@@ -365,6 +395,754 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     _caption.clear();
   }
 
+
+  Future<void> _sendCourtChat() async {
+    final message = _text.text.trim();
+    if (_busy || message.isEmpty) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.store.addMessage(message);
+      if (mounted) _text.clear();
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Message not sent. Retry.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _openEvidence(Map exhibit) async {
+    final photoId = exhibit['photoId'] as String?;
+    final path = photoId == null ? null : _photos[photoId];
+    if (path == null || !mounted) return;
+    final judge = JudgeService();
+    try {
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => EvidenceHighlights(
+            path: path,
+            caption: exhibit['caption'] as String? ?? '',
+            judge: judge,
+          ),
+        ),
+      );
+    } finally {
+      judge.close();
+    }
+  }
+
+  Future<void> _pauseMenu() async {
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Court menu'),
+        content: const Text(
+          'The shared turn timer keeps running while this screen is open.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Stay in court'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Leave court'),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && mounted) {
+      if (widget.onLobby != null) {
+        widget.onLobby!();
+      } else {
+        await Navigator.of(context).maybePop();
+      }
+    }
+  }
+
+  Widget _gameChatLine(String speaker, String message, Color accent) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Row(
+      children: [
+        Text(
+          '$speaker  ',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: accent,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
+        ),
+        Expanded(
+          child: Text(
+            message,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white, fontSize: 12),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _gameCourt(
+    BuildContext context,
+    Map<String, dynamic> c, {
+    required int phase,
+    required int role,
+    required bool both,
+    required int seconds,
+    required bool myTurn,
+    required Map? ruling,
+  }) {
+    final size = MediaQuery.sizeOf(context);
+    final names = List<String>.from(c['names'] as List);
+    final people = List<String>.from(c['people'] as List);
+    final evidence = c['evidence'] as List? ?? const [];
+    final portraits = c['portraits'] as List? ?? const [];
+    final roomChat = widget.store.messages
+        .where(
+          (message) =>
+              message['kind'] != 'court' &&
+              (message['text'] as String? ?? '').trim().isNotEmpty,
+        )
+        .toList();
+    final recentChat = roomChat.length > 2
+        ? roomChat.sublist(roomChat.length - 2)
+        : roomChat;
+    final line = hearingLine(c);
+    final currentSpeaker = line.speaker == 2
+        ? (phase >= 14 ? 'Judge · Muse Wonder' : 'Judge · Muse Spark')
+        : names[line.speaker.clamp(0, names.length - 1)];
+    final canSubmit =
+        both && _turns.containsKey(phase) && myTurn && seconds > 0;
+    final canContinue =
+        both && _turns.containsKey(phase) && myTurn && seconds == 0;
+    final canAddEvidence = phase == 0 ||
+        (both && phase <= 8 && myTurn && seconds > 0);
+    final panelHeight = (size.height * .39).clamp(132.0, 184.0);
+    final peopleWidth = (size.width * .17).clamp(128.0, 178.0);
+    final evidenceWidth = (size.width * .115).clamp(70.0, 94.0);
+    final timerActive = c['deadline'] != null && phase < 13 && phase != 12;
+    final minuteText = (seconds ~/ 60).toString().padLeft(2, '0');
+    final secondText = (seconds % 60).toString().padLeft(2, '0');
+    final timeText = timerActive ? '$minuteText:$secondText' : '--:--';
+    final approved =
+        (c['approved'] as List? ?? const []).contains(widget.store.uid);
+    const hudGold = Color(0xFFF4BD63);
+    const hudBase = Color(0xE9171723);
+    const hudBorder = Color(0xFF8C613F);
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF17151D),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          AnimatedCourtroom(store: widget.store, hearing: c),
+
+          // Compact case banner.
+          Positioned(
+            top: 8,
+            left: 10,
+            right: 188,
+            child: SafeArea(
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: Container(
+                  constraints: BoxConstraints(maxWidth: size.width * .48),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: hudBase,
+                    border: Border.all(color: hudGold, width: 1.5),
+                    borderRadius: BorderRadius.circular(13),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x77000000), blurRadius: 8),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.balance_rounded,
+                        color: hudGold,
+                        size: 27,
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          'CASE 01  ·  ${c['topic'] as String? ?? 'Our hearing'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Live timer and pause menu.
+          Positioned(
+            top: 8,
+            right: 10,
+            child: SafeArea(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: hudBase,
+                      border: Border.all(color: hudGold, width: 1.5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.timer_outlined,
+                          color: hudGold,
+                          size: 24,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          timeText,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                            fontSize: 20,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Material(
+                    color: hudBase,
+                    shape: RoundedRectangleBorder(
+                      side: const BorderSide(color: hudBorder, width: 1.5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: IconButton(
+                      onPressed: _pauseMenu,
+                      tooltip: 'Court menu',
+                      color: Colors.white,
+                      icon: const Icon(Icons.pause_rounded),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Evidence tray.
+          Positioned(
+            left: 10,
+            top: 72,
+            bottom: panelHeight + 18,
+            width: evidenceWidth,
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: hudBase,
+                border: Border.all(color: hudBorder, width: 1.5),
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Column(
+                children: [
+                  const Icon(
+                    Icons.folder_open_rounded,
+                    color: hudGold,
+                    size: 19,
+                  ),
+                  const SizedBox(height: 3),
+                  const Text(
+                    'EVIDENCE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: .5,
+                    ),
+                  ),
+                  const Divider(color: hudBorder, height: 12),
+                  Expanded(
+                    child: ListView(
+                      padding: EdgeInsets.zero,
+                      children: [
+                        for (final raw in evidence)
+                          Builder(
+                            builder: (context) {
+                              final exhibit = raw as Map;
+                              final photoId =
+                                  exhibit['photoId'] as String?;
+                              final path = photoId == null
+                                  ? null
+                                  : _photos[photoId];
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 7),
+                                child: Tooltip(
+                                  message:
+                                      '${exhibit['id']}: ${exhibit['caption']}',
+                                  child: InkWell(
+                                    onTap: () => _openEvidence(exhibit),
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Container(
+                                      height: 47,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF343342),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: hudGold,
+                                          width: 1,
+                                        ),
+                                      ),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: path == null
+                                          ? const Icon(
+                                              Icons.image_outlined,
+                                              color: Colors.white70,
+                                            )
+                                          : photoImage(
+                                              path,
+                                              fit: BoxFit.cover,
+                                            ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (canAddEvidence)
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _busy ? null : _attach,
+                      tooltip: 'Add evidence',
+                      color: hudGold,
+                      icon: const Icon(Icons.add_photo_alternate_outlined),
+                    ),
+                ],
+              ),
+            ),
+          ),
+
+          // Couple and judge roster.
+          Positioned(
+            right: 10,
+            top: 76,
+            bottom: panelHeight + 18,
+            width: peopleWidth,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
+              decoration: BoxDecoration(
+                color: hudBase,
+                border: Border.all(color: hudBorder, width: 1.5),
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(
+                          Icons.groups_rounded,
+                          color: hudGold,
+                          size: 18,
+                        ),
+                        SizedBox(width: 6),
+                        Text(
+                          'PEOPLE',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 7),
+                    for (var i = 0; i < 2; i++)
+                      Builder(
+                        builder: (context) {
+                          final id = i < portraits.length
+                              ? portraits[i] as String?
+                              : null;
+                          final path = id == null ? null : _photos[id];
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 29,
+                                  height: 29,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: i == 0
+                                          ? const Color(0xFFFF829B)
+                                          : const Color(0xFF7BC8F5),
+                                      width: 2,
+                                    ),
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: path == null
+                                      ? CircleAvatar(
+                                          backgroundColor:
+                                              const Color(0xFF5C4850),
+                                          child: Text(
+                                            names[i].isEmpty
+                                                ? '?'
+                                                : names[i][0].toUpperCase(),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        )
+                                      : photoImage(
+                                          path,
+                                          fit: BoxFit.cover,
+                                        ),
+                                ),
+                                const SizedBox(width: 7),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        names[i],
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      Text(
+                                        i == 0 ? 'Claimant' : 'Respondent',
+                                        maxLines: 1,
+                                        style: TextStyle(
+                                          color: i == 0
+                                              ? const Color(0xFFFF829B)
+                                              : const Color(0xFF7BC8F5),
+                                          fontSize: 9,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    const Divider(color: hudBorder, height: 12),
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 14,
+                          backgroundColor: Color(0xFF6B4A32),
+                          child: Icon(
+                            Icons.gavel_rounded,
+                            color: hudGold,
+                            size: 15,
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            phase >= 14 ? 'Muse Wonder' : 'Muse Spark',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // Court chat and actions.
+          Positioned(
+            left: 10,
+            right: peopleWidth + 18,
+            bottom: 8,
+            height: panelHeight,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
+              decoration: BoxDecoration(
+                color: const Color(0xF21A1724),
+                border: Border.all(color: hudGold, width: 1.5),
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x77000000), blurRadius: 10),
+                ],
+              ),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ListView(
+                      padding: EdgeInsets.zero,
+                      children: [
+                        for (final message in recentChat)
+                          Builder(
+                            builder: (context) {
+                              final senderIndex = people.indexOf(
+                                message['senderId'] as String? ?? '',
+                              );
+                              final speaker = senderIndex >= 0
+                                  ? names[senderIndex]
+                                  : 'Partner';
+                              final color = message['senderId'] ==
+                                      widget.store.uid
+                                  ? const Color(0xFFFF829B)
+                                  : const Color(0xFF7BC8F5);
+                              return _gameChatLine(
+                                speaker,
+                                message['text'] as String? ?? '',
+                                color,
+                              );
+                            },
+                          ),
+                        if (phase > 0)
+                          _gameChatLine(
+                            currentSpeaker,
+                            line.text,
+                            line.speaker == 2
+                                ? hudGold
+                                : line.speaker == 0
+                                ? const Color(0xFFFF829B)
+                                : const Color(0xFF7BC8F5),
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (!both)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Waiting for your partner to enter court.',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: .82),
+                          fontSize: 11,
+                        ),
+                      ),
+                    )
+                  else if ({9, 12, 16}.contains(phase))
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: _busy ? null : _review,
+                        icon: const Icon(Icons.gavel_rounded, size: 16),
+                        label: Text(
+                          phase == 16
+                              ? 'Ask Muse Wonder to review the appeal'
+                              : 'Ask Muse Spark to review the case',
+                        ),
+                      ),
+                    )
+                  else if (phase == 13 || phase == 17)
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          FilledButton.tonal(
+                            onPressed: _busy || approved
+                                ? null
+                                : () => _act('accept'),
+                            child: Text(approved ? 'Accepted' : 'Accept'),
+                          ),
+                          if (phase == 13 && role == 1) ...[
+                            const SizedBox(width: 6),
+                            OutlinedButton(
+                              onPressed: _busy ? null : () => _act('appeal'),
+                              child: const Text('Appeal'),
+                            ),
+                          ],
+                          const SizedBox(width: 6),
+                          TextButton(
+                            onPressed: _busy ? null : () => _act('decline'),
+                            child: const Text('Decline'),
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (phase == 18)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        c['closedStatus'] == 'accepted'
+                            ? 'Both partners accepted · court adjourned.'
+                            : 'Closed without a shared agreement.',
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                    )
+                  else if (both && _turns.containsKey(phase) && !myTurn)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Waiting for ${names[_turns[phase]!]} to take their turn.',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                        ),
+                      ),
+                    )
+                  else if (canSubmit)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'YOUR TURN  ·  $timeText remaining',
+                        style: const TextStyle(
+                          color: hudGold,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: .7,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        onPressed: canAddEvidence && !_busy ? _attach : null,
+                        tooltip: 'Add evidence',
+                        color: hudGold,
+                        icon: const Icon(
+                          Icons.add_photo_alternate_outlined,
+                          size: 20,
+                        ),
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: _text,
+                          enabled: !_busy,
+                          minLines: 1,
+                          maxLines: 2,
+                          maxLength: 2000,
+                          onChanged: (_) => setState(() {}),
+                          onSubmitted: (_) => _sendCourtChat(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                          ),
+                          decoration: InputDecoration(
+                            counterText: '',
+                            hintText: 'Type a message…',
+                            hintStyle: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
+                            filled: true,
+                            fillColor: const Color(0xFF101019),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        onPressed: _busy || _text.text.trim().isEmpty
+                            ? null
+                            : _sendCourtChat,
+                        tooltip: 'Send message',
+                        color: const Color(0xFF9DA8FF),
+                        icon: const Icon(Icons.send_rounded),
+                      ),
+                      if (canSubmit || canContinue)
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          onPressed: _busy
+                              ? null
+                              : canContinue
+                              ? () => _act('turn')
+                              : _text.text.trim().isEmpty
+                              ? null
+                              : () => _act(
+                                  'turn',
+                                  extra: {'text': _text.text.trim()},
+                                ),
+                          tooltip: canContinue
+                              ? 'Continue after the turn timer'
+                              : 'Submit this court turn',
+                          color: hudGold,
+                          icon: const Icon(Icons.gavel_rounded),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          if (_error != null)
+            Positioned(
+              top: 56,
+              left: 12,
+              child: SafeArea(
+                child: Material(
+                  color: const Color(0xF7FFF3E8),
+                  borderRadius: BorderRadius.circular(9),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Text(
+                      _error!,
+                      style: const TextStyle(
+                        color: Color(0xFF8E3427),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (_busy)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: LinearProgressIndicator(),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = _case;
@@ -395,16 +1173,28 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
               .clamp(0, 120);
     final myTurn = _turns[phase] == role;
     final ruling = c['ruling'] as Map?;
+    if (joined || phase > 0) {
+      return _gameCourt(
+        context,
+        c,
+        phase: phase,
+        role: role,
+        both: both,
+        seconds: seconds,
+        myTurn: myTurn,
+        ruling: ruling,
+      );
+    }
     return Scaffold(
       appBar: AppBar(
+        title: const Text('Courtroom setup'),
         leading: widget.onLobby == null
             ? null
             : IconButton(
                 onPressed: widget.onLobby,
-                tooltip: 'Room lobby',
+                tooltip: 'Back to cases',
                 icon: const Icon(Icons.arrow_back),
               ),
-        title: const Text('Couple Court'),
         actions: [
           IconButton(
             onPressed: _busy ? null : _refresh,
@@ -413,14 +1203,81 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1100),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          const ColoredBox(color: Color(0xFFFFE9DC)),
+          if (_busy)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: LinearProgressIndicator(),
+            ),
+          if (widget.onLobby != null)
+            Positioned(
+              top: 8,
+              left: 8,
+              child: SafeArea(
+                child: IconButton.filledTonal(
+                  onPressed: widget.onLobby,
+                  tooltip: 'Leave courtroom',
+                  icon: const Icon(Icons.arrow_back_rounded),
+                ),
+              ),
+            ),
+          if (_error != null)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: SafeArea(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 360),
+                  child: Material(
+                    color: const Color(0xF7FFF3E8),
+                    borderRadius: BorderRadius.circular(12),
+                    elevation: 6,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      child: Text(
+                        _error!,
+                        style: const TextStyle(color: Color(0xFF8E3427)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          DraggableScrollableSheet(
+            initialChildSize: 1.0,
+            minChildSize: 1.0,
+            maxChildSize: 1.0,
+            snap: true,
+            builder: (context, scrollController) => Container(
+              decoration: const BoxDecoration(
+                color: Color(0xFFFDF1DB),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Color(0x55000000),
+                    blurRadius: 18,
+                    offset: Offset(0, -4),
+                  ),
+                ],
+              ),
+              child: SingleChildScrollView(
+                controller: scrollController,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1100),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const SizedBox(height: 8),
                 if (widget.roomInvite != null)
                   Card(
                     child: Padding(
@@ -456,7 +1313,6 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                       ),
                     ),
                   ),
-                AnimatedCourtroom(store: widget.store, hearing: c),
                 if (_photos[c['scenePhotoId']] != null)
                   ExpansionTile(
                     title: const Text('Our Muse Image courtroom artwork'),
@@ -528,17 +1384,6 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                 Text(
                   'You are the ${role == 0 ? 'claimant' : 'respondent'}. Both browsers use the same hearing.',
                 ),
-                if (_error != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Text(
-                      _error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ),
-                if (_busy) const LinearProgressIndicator(),
                 if (!both && phase == 0) ...[
                   const SizedBox(height: 12),
                   Text(
@@ -759,10 +1604,14 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                       '$field: ${c[field] is List ? (c[field] as List).join(' · ') : c[field]}',
                     ),
                   ),
-              ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

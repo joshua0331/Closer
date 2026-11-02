@@ -24,11 +24,11 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
   late final AnimationController _motion;
   final _audio = CourtAudio();
   late CourtLine _line;
-  Timer? _typing;
+  Timer? _typing, _calloutTimer;
+  String? _callout;
   String? _chatId;
   int _letters = 0;
-  bool _speaking = false, _expanded = false, _motionOn = true;
-  final _stageKey = GlobalKey();
+  bool _speaking = false, _motionOn = true;
   @override
   void initState() {
     super.initState();
@@ -58,7 +58,87 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
   void didUpdateWidget(covariant AnimatedCourtroom oldWidget) {
     super.didUpdateWidget(oldWidget);
     final next = hearingLine(widget.hearing);
-    if (next.key != hearingLine(oldWidget.hearing).key) _say(next);
+    final previous = hearingLine(oldWidget.hearing);
+    final lineChanged = next.key != previous.key;
+    final sound = _hearingSound(
+      oldWidget.hearing,
+      widget.hearing,
+      next,
+      lineChanged: lineChanged,
+    );
+    if (lineChanged) {
+      _say(next, sound: sound);
+    } else if (sound != null) {
+      _audio.play(sound);
+    }
+  }
+
+  CourtSound? _hearingSound(
+    Map<String, dynamic> previous,
+    Map<String, dynamic> current,
+    CourtLine line, {
+    required bool lineChanged,
+  }) {
+    final oldPhase = previous['phase'] as int?;
+    final phase = current['phase'] as int?;
+    if (oldPhase != phase && (phase == 13 || phase == 17 || phase == 18)) {
+      if (phase == 13) return CourtSound.verdict;
+      if (phase == 17) return CourtSound.appealDecision;
+      return current['closedStatus'] == 'accepted'
+          ? CourtSound.accepted
+          : CourtSound.unresolved;
+    }
+
+    if (lineChanged) {
+      final dialogueSound = _speechSound(line.text);
+      if (dialogueSound != null) return dialogueSound;
+    }
+
+    if (oldPhase != phase) {
+      if (phase == 1 || phase == 12 || phase == 16) {
+        return CourtSound.courtroom;
+      }
+      if (phase != null &&
+          ((phase >= 1 && phase <= 11) || phase == 14 || phase == 15)) {
+        return CourtSound.turn;
+      }
+    }
+
+    final previousEvidence = previous['evidence'] as List? ?? const [];
+    final currentEvidence = current['evidence'] as List? ?? const [];
+    if (currentEvidence.length > previousEvidence.length) {
+      return CourtSound.evidence;
+    }
+
+    return null;
+  }
+
+  CourtSound? _speechSound(String text) {
+    final normalized = text.toLowerCase();
+    if (RegExp(r'\b(overruled|overrule)\b').hasMatch(normalized)) {
+      return CourtSound.overruled;
+    }
+    if (RegExp(r'\b(sustained|upheld)\b').hasMatch(normalized)) {
+      return CourtSound.sustained;
+    }
+    if (RegExp(r'\b(objection|i object)\b').hasMatch(normalized)) {
+      return CourtSound.objection;
+    }
+    return null;
+  }
+
+  String? _calloutFor(String text) {
+    final normalized = text.toLowerCase();
+    if (normalized.contains('overruled') || normalized.contains('overrule')) {
+      return 'OVERRULED';
+    }
+    if (normalized.contains('sustained') || normalized.contains('upheld')) {
+      return 'SUSTAINED';
+    }
+    if (normalized.contains('objection') || normalized.contains('i object')) {
+      return 'OBJECTION!';
+    }
+    return null;
   }
 
   Map<String, dynamic>? _latestChat() {
@@ -80,15 +160,28 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
     }
   }
 
-  void _say(CourtLine line) {
+  void _say(CourtLine line, {CourtSound? sound}) {
     _typing?.cancel();
+    _calloutTimer?.cancel();
     if (!mounted) return;
+    final callout = _calloutFor(line.text);
     setState(() {
       _line = line;
       _letters = _motionOn ? 0 : line.text.length;
       _speaking = _motionOn;
+      _callout = callout;
     });
-    _audio.cue(line.speaker == 2);
+    if (callout != null) {
+      _calloutTimer = Timer(const Duration(milliseconds: 1700), () {
+        if (mounted) setState(() => _callout = null);
+      });
+    }
+    final dialogueSound = sound ?? _speechSound(line.text);
+    if (dialogueSound != null) {
+      _audio.play(dialogueSound);
+    } else {
+      _audio.cue(line.speaker == 2);
+    }
     if (!_motionOn) return;
     _typing = Timer.periodic(const Duration(milliseconds: 32), (timer) {
       if (!mounted) {
@@ -103,14 +196,6 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
         }
       });
       if (timer.tick % 4 == 0 && _speaking) _audio.blip(timer.tick);
-    });
-  }
-
-  void _skip() {
-    _typing?.cancel();
-    setState(() {
-      _letters = _line.text.length;
-      _speaking = false;
     });
   }
 
@@ -130,6 +215,7 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
     widget.store.removeListener(_chat);
     WidgetsBinding.instance.removeObserver(this);
     _typing?.cancel();
+    _calloutTimer?.cancel();
     _motion.dispose();
     _audio.dispose();
     super.dispose();
@@ -137,475 +223,239 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
 
   @override
   Widget build(BuildContext context) {
-    final names = List<String>.from(widget.hearing['names'] as List);
-    final speaker = _line.speaker == 2
-        ? 'Judge · ${(widget.hearing['phase'] as int) >= 14 ? 'Muse Wonder' : 'Muse Spark'}'
-        : names[_line.speaker];
-    return Column(
-      key: _stageKey,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: const BoxDecoration(
-            color: Color(0xFF35231F),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          child: Row(
+    final calloutColor = _callout == 'SUSTAINED'
+        ? const Color(0xFF43865C)
+        : const Color(0xFFCE332E);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final height = constraints.hasBoundedHeight
+            ? constraints.maxHeight
+            : math.max(330.0, (constraints.maxWidth * .60).clamp(330.0, 660.0));
+        return SizedBox(
+          height: height,
+          width: double.infinity,
+          child: Stack(
+            fit: StackFit.expand,
             children: [
-              const Icon(Icons.circle, size: 9, color: Color(0xFFF5BD7A)),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text(
-                  'COUPLE COURT · LIVE',
-                  style: TextStyle(
-                    color: Color(0xFFFFE7CB),
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1,
+              _courtStage2d(),
+              if (_callout != null)
+                Positioned(
+                  top: 62,
+                  right: 22,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 160),
+                    child: Container(
+                      key: ValueKey<String>(_callout!),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: calloutColor,
+                        border: Border.all(
+                          color: const Color(0xFFFFD66D),
+                          width: 2,
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x88000000),
+                            blurRadius: 12,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Text(
+                        _callout!,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 20,
+                          letterSpacing: .8,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              ),
-              IconButton(
-                tooltip: _audio.enabled
-                    ? 'Mute sound effects'
-                    : 'Enable sound effects',
-                color: Colors.white,
-                onPressed: () {
-                  setState(() => _audio.toggle());
-                  if (_audio.enabled) _audio.cue(false);
-                },
-                icon: Icon(
-                  _audio.enabled
-                      ? Icons.volume_up_outlined
-                      : Icons.volume_off_outlined,
-                ),
-              ),
-              IconButton(
-                tooltip: _motionOn ? 'Reduce motion' : 'Enable animation',
-                color: Colors.white,
-                onPressed: () {
-                  setState(() => _motionOn = !_motionOn);
-                  if (_motionOn) {
-                    _motion.repeat();
-                  } else {
-                    _motion.stop();
-                    _skip();
-                  }
-                },
-                icon: Icon(
-                  _motionOn
-                      ? Icons.pause_circle_outline
-                      : Icons.play_circle_outline,
-                ),
-              ),
-              IconButton(
-                tooltip: _expanded ? 'Shrink courtroom' : 'Expand courtroom',
-                color: Colors.white,
-                onPressed: () {
-                  setState(() => _expanded = !_expanded);
-                  Scrollable.ensureVisible(
-                    _stageKey.currentContext!,
-                    alignment: 0,
-                  );
-                },
-                icon: Icon(
-                  _expanded ? Icons.fullscreen_exit : Icons.fullscreen,
-                ),
-              ),
             ],
           ),
-        ),
-        LayoutBuilder(
-          builder: (context, bounds) {
-            final height = _expanded
-                ? MediaQuery.sizeOf(context).height * .78
-                : (bounds.maxWidth * .60).clamp(330.0, 660.0);
-            return SizedBox(
-              height: height + 185,
-              width: double.infinity,
-              child: ClipRect(
-                child: Stack(
-                  children: [
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      height: height,
-                      child: AnimatedBuilder(
-                        animation: _motion,
-                        builder: (context, _) => CustomPaint(
-                          painter: _CourtPainter(
-                            _motion.value * 12,
-                            _line.speaker,
-                            _speaking && _motionOn,
-                            names,
-                            (widget.hearing['phase'] as int) == 18,
-                          ),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      top: 12,
-                      left: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xD935231F),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          _speaking
-                              ? '${names.length > _line.speaker ? names[_line.speaker] : 'Judge'} is speaking'
-                              : 'Court is in session',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      top: height + 10,
-                      left: 12,
-                      right: 12,
-                      child: Semantics(
-                        liveRegion: true,
-                        label: '$speaker: ${_line.text}',
-                        child: Material(
-                          color: const Color(0xFFFDF1DB),
-                          borderRadius: BorderRadius.circular(14),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(14),
-                            onTap: _speaking ? _skip : () => _say(_line),
-                            child: Padding(
-                              padding: const EdgeInsets.all(14),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    speaker,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Color(0xFFA14D36),
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      maxHeight: height < 400 ? 82 : 110,
-                                    ),
-                                    child: SingleChildScrollView(
-                                      child: Text(
-                                        _line.text.substring(0, _letters),
-                                        style: const TextStyle(
-                                          color: Color(0xFF35231F),
-                                          fontSize: 15,
-                                          height: 1.35,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 5),
-                                  Text(
-                                    _speaking
-                                        ? 'Tap to show all'
-                                        : 'Tap to replay dialogue',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Color(0xFF866B5D),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+        );
+      },
+    );
+  }
+
+  Widget _courtStage2d() {
+    return ColoredBox(
+      color: const Color(0xFF2D1B19),
+      child: ClipRect(
+        child: FittedBox(
+          fit: BoxFit.fill,
+          alignment: Alignment.center,
+          child: SizedBox(
+            width: 1672,
+            height: 941,
+            child: Stack(
+              clipBehavior: Clip.hardEdge,
+              children: [
+                Positioned.fill(
+                  child: Image.asset(
+                    'assets/court/2d/court_stage.png',
+                    fit: BoxFit.fill,
+                    filterQuality: FilterQuality.medium,
+                  ),
                 ),
-              ),
-            );
-          },
-        ),
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 6),
-          child: Text(
-            'Sound effects start after you tap the speaker. Dialogue follows room messages and submitted testimony.',
-            style: TextStyle(fontSize: 11),
+                _judgeRig(),
+                _partnerRig(
+                  bodyAsset: 'assets/court/2d/girl_body.png',
+                  leftArmAsset: 'assets/court/2d/girl_arm_left.png',
+                  rightArmAsset: 'assets/court/2d/girl_arm_right.png',
+                  left: 106,
+                  top: 215,
+                  width: 452,
+                  height: 468,
+                  visibleHeight: 259,
+                  voice: 0,
+                  leftShoulder: const Offset(484 / 1233, 445 / 1276),
+                  rightShoulder: const Offset(748 / 1233, 445 / 1276),
+                ),
+                _partnerRig(
+                  bodyAsset: 'assets/court/2d/boy_body.png',
+                  leftArmAsset: 'assets/court/2d/boy_arm_left.png',
+                  rightArmAsset: 'assets/court/2d/boy_arm_right.png',
+                  left: 1114,
+                  top: 215,
+                  width: 450,
+                  height: 468,
+                  visibleHeight: 259,
+                  voice: 1,
+                  leftShoulder: const Offset(420 / 1230, 432 / 1278),
+                  rightShoulder: const Offset(807 / 1230, 432 / 1278),
+                ),
+              ],
+            ),
           ),
         ),
-      ],
-    );
-  }
-}
-
-class _CourtPainter extends CustomPainter {
-  _CourtPainter(this.time, this.speaker, this.talking, this.names, this.closed);
-  final double time;
-  final int speaker;
-  final bool talking, closed;
-  final List<String> names;
-  final _paint = Paint();
-  void box(
-    Canvas c,
-    double x,
-    double y,
-    double w,
-    double h,
-    int color, [
-    double radius = 0,
-  ]) {
-    _paint.color = Color(color);
-    c.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(x, y, w, h),
-        Radius.circular(radius),
       ),
-      _paint,
     );
   }
 
-  void line(Canvas c, Offset a, Offset b, int color, double width) {
-    c.drawLine(
-      a,
-      b,
-      Paint()
-        ..color = Color(color)
-        ..strokeWidth = width
-        ..strokeCap = StrokeCap.round,
-    );
-  }
-
-  void text(
-    Canvas c,
-    String value,
-    Rect rect, {
-    double size = 17,
-    int color = 0xFFFFE6C1,
+  Widget _partnerRig({
+    required String bodyAsset,
+    required String leftArmAsset,
+    required String rightArmAsset,
+    required double left,
+    required double top,
+    required double width,
+    required double height,
+    required double visibleHeight,
+    required int voice,
+    required Offset leftShoulder,
+    required Offset rightShoulder,
   }) {
-    final painter = TextPainter(
-      text: TextSpan(
-        text: value,
-        style: TextStyle(
-          fontSize: size,
-          fontWeight: FontWeight.bold,
-          color: Color(color),
+    return Positioned(
+      left: left,
+      top: top,
+      width: width,
+      height: visibleHeight,
+      child: ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topCenter,
+          minWidth: width,
+          maxWidth: width,
+          minHeight: height,
+          maxHeight: height,
+          child: AnimatedBuilder(
+            animation: _motion,
+            builder: (context, _) {
+              final phase = _motion.value * math.pi * 2;
+              final talking = _motionOn && _speaking && _line.speaker == voice;
+              final wave = talking ? math.sin(phase * 7) * .16 : 0.0;
+              final bob = math.sin(phase + voice) * (talking ? 2.2 : .8);
+              return Transform.translate(
+                offset: Offset(0, bob),
+                child: SizedBox(
+                  width: width,
+                  height: height,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _rotatingLimb(leftArmAsset, leftShoulder, .52 + wave),
+                      _rotatingLimb(rightArmAsset, rightShoulder, -.52 - wave),
+                      Image.asset(bodyAsset, fit: BoxFit.fill),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
         ),
       ),
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
-      maxLines: 1,
-      ellipsis: '…',
-    )..layout(maxWidth: rect.width);
-    painter.paint(
-      c,
-      Offset(rect.left + (rect.width - painter.width) / 2, rect.top),
     );
   }
 
-  @override
-  void paint(Canvas c, Size size) {
-    c.scale(size.width / 1000, size.height / 660);
-    final backdrop = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFFEAC9A1), Color(0xFFBB825B)],
-      ).createShader(const Rect.fromLTWH(0, 0, 1000, 660));
-    c.drawRect(const Rect.fromLTWH(0, 0, 1000, 660), backdrop);
-    box(c, 0, 300, 1000, 360, 0xFF6F4633);
-    final floor = Path()
-      ..moveTo(260, 300)
-      ..lineTo(740, 300)
-      ..lineTo(1000, 660)
-      ..lineTo(0, 660)
-      ..close();
-    c.drawPath(floor, Paint()..color = const Color(0xFFBB8153));
-    for (var i = 0; i < 9; i++) {
-      line(
-        c,
-        Offset(260 + i * 60, 300),
-        Offset(-150 + i * 165, 660),
-        0xFF9C6543,
-        2,
-      );
-    }
-    for (var y = 330.0; y < 660; y += 48) {
-      line(c, Offset(0, y), Offset(1000, y), 0xFF9C6543, 2);
-    }
-    for (final x in [50.0, 830.0]) {
-      box(c, x, 55, 120, 250, 0xFF80503C, 4);
-      box(c, x + 10, 65, 100, 232, 0xFFBA8761, 3);
-      box(c, x + 20, 78, 80, 95, 0xFF985E45, 3);
-      box(c, x + 20, 185, 80, 95, 0xFF985E45, 3);
-      box(c, x + 90, 183, 7, 15, 0xFFFFD88D, 3);
-    }
-    for (final x in [220.0, 770.0]) {
-      c.drawCircle(
-        Offset(x, 125),
-        43 + math.sin(time * 3) * 2,
-        Paint()..color = const Color(0x22FFDE91),
-      );
-      box(c, x - 4, 112, 8, 45, 0xFF7F4936);
-      c.drawCircle(
-        Offset(x, 104),
-        12,
-        Paint()..color = const Color(0xFFFFDA8A),
-      );
-    }
-    box(c, 330, 45, 340, 83, 0xFF9C6242, 5);
-    box(c, 338, 53, 324, 67, 0xFFEED5AF, 3);
-    text(
-      c,
-      'COUPLE COURT',
-      const Rect.fromLTWH(355, 67, 290, 40),
-      size: 30,
-      color: 0xFF815035,
-    );
-    // Judge's chair, articulated judge and raised bench.
-    box(c, 439, 142, 122, 146, 0xFF392D32, 12);
-    box(c, 447, 150, 106, 130, 0xFF586879, 8);
-    actor(c, 500, 220, 2, .84);
-    box(c, 317, 278, 366, 30, 0xFFE1A463, 4);
-    box(c, 335, 307, 330, 107, 0xFF774832);
-    box(c, 351, 320, 298, 79, 0xFFA66A44, 3);
-    box(c, 416, 330, 168, 58, 0xFF8D573A, 3);
-    text(
-      c,
-      closed ? 'ADJOURNED' : 'THE JUDGE',
-      const Rect.fromLTWH(430, 348, 140, 30),
-      size: 18,
-    );
-    // Participants stand separately on their own animated rigs.
-    actor(c, 191, 352, 0, 1.12);
-    actor(c, 809, 352, 1, 1.12);
-    podium(c, 61, 397, names[0], speaker == 0 && talking);
-    podium(c, 675, 397, names[1], speaker == 1 && talking);
-    // Brass gallery rails give the stage foreground depth.
-    for (final x in [22.0, 978.0]) {
-      box(c, x - 5, 420, 10, 150, 0xFF51342B);
-      c.drawCircle(
-        Offset(x, 420),
-        13,
-        Paint()..color = const Color(0xFFE6BB72),
-      );
-    }
-    line(c, const Offset(22, 446), const Offset(80, 481), 0xFFE6BB72, 7);
-    line(c, const Offset(978, 446), const Offset(920, 481), 0xFFE6BB72, 7);
-  }
-
-  void podium(Canvas c, double x, double y, String name, bool lit) {
-    if (lit) box(c, x - 9, y - 7, 282, 111, 0x55FFD18B, 10);
-    box(c, x, y, 264, 21, 0xFFE2A164, 4);
-    box(c, x + 12, y + 21, 240, 80, 0xFF663E30, 3);
-    box(c, x + 26, y + 31, 212, 57, 0xFF9A5D3C, 2);
-    text(c, name, Rect.fromLTWH(x + 36, y + 47, 192, 30), size: 20);
-  }
-
-  void actor(Canvas c, double x, double y, int id, double scale) {
-    final active = speaker == id && talking;
-    final sway = math.sin(time * (active ? 11 : 2) + id) * (active ? 2.8 : 1.0);
-    c.save();
-    c.translate(x, y + sway);
-    c.scale(scale);
-    if (active) {
-      c.drawOval(
-        const Rect.fromLTWH(-54, -75, 108, 138),
-        Paint()..color = const Color(0x24FFE4A5),
-      );
-    }
-    final shirt = id == 2
-        ? 0xFF34303D
-        : id == 0
-        ? 0xFFDD8C75
-        : 0xFF668F92;
-    final skin = id == 2 ? 0xFFE0AF88 : 0xFFE9B795;
-    // Independent arm movement is driven by the current speech event.
-    for (final side in [-1, 1]) {
-      final gesture = active ? math.sin(time * 8 + side) * .32 : 0.0;
-      c.save();
-      c.translate(side * 30.0, -3);
-      c.rotate(side * (.45 + gesture));
-      box(c, -8, 0, 16, 49, shirt, 8);
-      box(c, -7, 40, 14, 17, skin, 6);
-      c.restore();
-    }
-    box(c, -31, -13, 62, 77, shirt, 14);
-    if (id == 2) {
-      box(c, -11, -12, 8, 38, 0xFFFFF3D7, 2);
-      box(c, 3, -12, 8, 38, 0xFFFFF3D7, 2);
-    }
-    box(c, -9, -24, 18, 20, skin, 4);
-    if (id == 0) {
-      box(c, -34, -82, 68, 92, 0xFF593C35, 23);
-    }
-    c.drawOval(
-      const Rect.fromLTWH(-29, -82, 58, 66),
-      Paint()..color = Color(skin),
-    );
-    final hair = id == 2
-        ? 0xFFB5ADA1
-        : id == 0
-        ? 0xFF593C35
-        : 0xFF684235;
-    final tuft = Path()
-      ..moveTo(-32, -52)
-      ..lineTo(-33, -78)
-      ..quadraticBezierTo(0, -111, 30, -79)
-      ..lineTo(31, -49)
-      ..lineTo(18, -69)
-      ..lineTo(7, -75)
-      ..lineTo(-7, -63)
-      ..lineTo(-20, -68)
-      ..close();
-    c.drawPath(tuft, Paint()..color = Color(hair));
-    final blink = (time + id * .85) % 4.3 < .14;
-    for (final eye in [-11.0, 11.0]) {
-      if (blink) {
-        line(c, Offset(eye - 3, -50), Offset(eye + 3, -50), 0xFF382D2B, 2);
-      } else {
-        c.drawOval(
-          Rect.fromCenter(center: Offset(eye, -50), width: 8, height: 11),
-          Paint()..color = const Color(0xFFFFF6E9),
-        );
-        c.drawCircle(
-          Offset(eye + 1, -49),
-          2.5,
-          Paint()..color = const Color(0xFF382D2B),
-        );
-      }
-    }
-    final mouth = active ? 4 + math.sin(time * 23).abs() * 5 : 2.0;
-    c.drawOval(
-      Rect.fromCenter(
-        center: const Offset(0, -31),
-        width: active ? 14 : 12,
-        height: mouth,
+  Widget _rotatingLimb(String asset, Offset pivot, double angle) {
+    return Positioned.fill(
+      child: Transform.rotate(
+        alignment: Alignment(pivot.dx * 2 - 1, pivot.dy * 2 - 1),
+        angle: angle,
+        child: Image.asset(asset, fit: BoxFit.fill),
       ),
-      Paint()..color = const Color(0xFF79433A),
     );
-    if (id == 2) {
-      // Gavel arm strikes in rhythm during a judge's line.
-      c.save();
-      c.translate(42, 4);
-      c.rotate(active ? -.6 + math.sin(time * 9) * .6 : -.45);
-      box(c, -4, -43, 8, 49, 0xFF9F643A, 3);
-      box(c, -17, -53, 34, 17, 0xFFD29A58, 3);
-      c.restore();
-    }
-    c.restore();
   }
 
-  @override
-  bool shouldRepaint(covariant _CourtPainter old) =>
-      old.time != time ||
-      old.speaker != speaker ||
-      old.talking != talking ||
-      old.closed != closed ||
-      old.names.toString() != names.toString();
+  Widget _judgeRig() {
+    const width = 382.0;
+    const height = 406.0;
+    const visibleHeight = 278.0;
+    return Positioned(
+      left: 645,
+      top: 65,
+      width: width,
+      height: visibleHeight,
+      child: ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topCenter,
+          minWidth: width,
+          maxWidth: width,
+          minHeight: height,
+          maxHeight: height,
+          child: AnimatedBuilder(
+            animation: _motion,
+            builder: (context, _) {
+              final phase = _motion.value * math.pi * 2;
+              final talking = _motionOn && _speaking && _line.speaker == 2;
+              final swing = talking ? math.sin(phase * 8) * .22 : 0.0;
+              final bob = math.sin(phase + 1) * (talking ? 1.8 : .55);
+              return Transform.translate(
+                offset: Offset(0, bob),
+                child: SizedBox(
+                  width: width,
+                  height: height,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Positioned.fill(
+                        child: Image.asset(
+                          'assets/court/2d/judge_body.png',
+                          fit: BoxFit.fill,
+                        ),
+                      ),
+                      Transform.rotate(
+                        alignment: const Alignment(-.72, -.23),
+                        angle: swing,
+                        child: Image.asset(
+                          'assets/court/2d/judge_gavel_hand.png',
+                          fit: BoxFit.fill,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
 }

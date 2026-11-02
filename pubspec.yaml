@@ -46,6 +46,7 @@ dependencies:
   firebase_core: ^5.1.0
   firebase_auth: ^7.0.1
   url_launcher: ^6.3.3
+  audioplayers: 6.8.1
 
 dev_dependencies:
   flutter_test:
@@ -73,6 +74,8 @@ flutter:
     - assets/branding/closer-logo.png
     - assets/maps/countries.geojson
     - assets/court/courtroom.png
+    - assets/court/2d/
+    - assets/court_sounds/
   fonts:
     - family: CoupleSans
       fonts:
