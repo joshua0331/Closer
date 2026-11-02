@@ -237,18 +237,18 @@ class _RoomGateState extends State<RoomGate> with WidgetsBindingObserver {
                       ),
                     ),
                     icon: const Icon(Icons.sports_esports_outlined),
-                    label: const Text('Preview the courtroom'),
+                    label: const Text('Preview Metherapy'),
                   ),
                   const SizedBox(height: 16),
                   Text(
                     _join
-                        ? 'Your seat in court awaits.'
-                        : 'Settle it in Couple Court.',
+                        ? 'Your Metherapy session is ready.'
+                        : 'Talk it through in Metherapy.',
                     style: Theme.of(context).textTheme.headlineMedium,
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'No account needed. Enter your name, add a selfie and invite your partner to a private two-person courtroom.',
+                    'No account needed. Enter your name, add a selfie and invite your partner to a private two-person Metherapy session.',
                   ),
                   const SizedBox(height: 20),
                   SegmentedButton<bool>(
@@ -281,7 +281,8 @@ class _RoomGateState extends State<RoomGate> with WidgetsBindingObserver {
                       maxLength: 1000,
                       maxLines: 3,
                       decoration: const InputDecoration(
-                        labelText: 'What is the case about?',
+                        labelText:
+                            'What would you like to talk about together?',
                       ),
                     ),
                   const SizedBox(height: 12),
@@ -329,8 +330,8 @@ class _RoomGateState extends State<RoomGate> with WidgetsBindingObserver {
                       _busy
                           ? 'Opening room…'
                           : _join
-                          ? 'Join the courtroom'
-                          : 'Create my courtroom',
+                          ? 'Join the Metherapy session'
+                          : 'Create Metherapy session',
                     ),
                   ),
                   if (_store != null)

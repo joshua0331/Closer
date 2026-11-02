@@ -120,7 +120,7 @@ class _EvidenceHighlightsState extends State<EvidenceHighlights> {
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
           const Text(
-            'Name one visible object, such as “plate” or “phone”. Boxes are visual guides, not proof. The judge examines the original photo.',
+            'Name one visible object, such as “plate” or “phone”. Boxes are visual guides, not proof. The AI can point out visible details, but cannot verify the story.',
           ),
           TextField(
             controller: _prompt,

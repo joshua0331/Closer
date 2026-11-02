@@ -171,10 +171,11 @@ class _CoupleHomeState extends State<CoupleHome> {
     final issue = await showDialog<String>(
       context: context,
       builder: (_) => const _TextDialog(
-        title: 'Summon your partner',
-        label: 'What would you like to talk about?',
-        description: 'The summons appears in your shared chat. Push notifications are not enabled yet.',
-        action: 'Add court summons',
+        title: 'Invite your partner to a Metherapy session',
+        label: 'Session topic',
+        hint: 'What would you like to work through together?',
+        description: 'Your partner sees this topic before joining the session.',
+        action: 'Invite to session',
       ),
     );
     if (issue == null || !mounted) return;
@@ -183,6 +184,24 @@ class _CoupleHomeState extends State<CoupleHome> {
   }
 
   Future<void> _openCourt(Map<String, dynamic> message) async {
+    if (message['status'] == 'closed') {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Session ended'),
+          content: const Text(
+            'This Metherapy session is finished and can’t be re-entered.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Got it'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     if (store is CloudCoupleStore) {
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -619,7 +638,7 @@ class _CoupleHomeState extends State<CoupleHome> {
       _card(
         Icons.auto_awesome_outlined,
         'Meta AI demo access',
-        'Connect with a private demo code to use the hosted judge and Muse Image. Your own Meta account is not required.',
+        'Connect with a private demo code to use Metherapy and Muse Image. Your own Meta account is not required.',
         action: OutlinedButton(
           onPressed: _demoAccess,
           child: const Text('AI demo access'),
@@ -639,12 +658,12 @@ class _CoupleHomeState extends State<CoupleHome> {
       ),
       const SizedBox(height: 16),
       _card(
-        Icons.balance,
+        Icons.auto_awesome_rounded,
         'Make room for understanding.',
-        'Bring a disagreement to Couple Court and take turns being heard.',
+        'Make space to hear each other with a guided Metherapy session.',
         action: OutlinedButton(
           onPressed: _summon,
-          child: const Text('Summon partner'),
+          child: const Text('Invite partner to a session'),
         ),
       ),
     ],
@@ -678,8 +697,8 @@ class _CoupleHomeState extends State<CoupleHome> {
             ),
             IconButton(
               onPressed: _summon,
-              icon: const Icon(Icons.gavel),
-              tooltip: 'Summon partner',
+              icon: const Icon(Icons.auto_awesome_rounded),
+              tooltip: 'Invite partner to a session',
             ),
           ],
         ),
@@ -690,7 +709,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                 child: Padding(
                   padding: EdgeInsets.all(24),
                   child: Text(
-                    'Your story starts here.\nSend your partner a message, photo or court summons.',
+                    'Your story starts here.\nSend your partner a message, photo or Metherapy invite.',
                     textAlign: TextAlign.center,
                   ),
                 ),
@@ -789,15 +808,17 @@ class _CoupleHomeState extends State<CoupleHome> {
         children: [
           Row(
             children: [
-              const Icon(Icons.balance),
+              const Icon(Icons.auto_awesome_rounded),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   entry['status'] == 'closed'
-                      ? entry['courtStatus'] == 'unresolved'
-                            ? 'Court · unresolved'
-                            : 'Court · case closed'
-                      : 'A little time in court?',
+                      ? entry['courtStatus'] == 'ended'
+                            ? 'Session · ended'
+                            : entry['courtStatus'] == 'unresolved'
+                            ? 'Session · unfinished'
+                            : 'Session · complete'
+                      : 'A guided session together?',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
@@ -810,18 +831,19 @@ class _CoupleHomeState extends State<CoupleHome> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Our next step: ${entry['agreement']}'),
-                if (store.online)
-                  TextButton(
-                    onPressed: () => _openCourt(entry),
-                    child: const Text('View shared hearing record'),
-                  ),
+                if ((entry['agreement'] as String? ?? '').isNotEmpty)
+                  Text('Our next step: ${entry['agreement']}'),
+                const SizedBox(height: 4),
+                const Text(
+                  'This session has ended and can’t be re-entered.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF80665D)),
+                ),
               ],
             )
           else
             FilledButton.tonal(
               onPressed: () => _openCourt(entry),
-              child: const Text('Enter Couple Court'),
+              child: const Text('Enter Metherapy session'),
             ),
           const SizedBox(height: 8),
           if (!store.online)
@@ -881,23 +903,119 @@ class _CoupleHomeState extends State<CoupleHome> {
     ],
   );
 
+  Future<void> _showAllSessions(
+    List<Map<String, dynamic>> cases,
+    List<Map<String, dynamic>> history,
+  ) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFFFFF9F3),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(sheetContext).height * .8,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'All sessions',
+                        style: Theme.of(sheetContext).textTheme.titleLarge
+                            ?.copyWith(
+                              color: const Color(0xFF542819),
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      tooltip: 'Close',
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: ListView(
+                    children: [
+                      for (final entry in cases)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _summonsCard(entry),
+                        ),
+                      for (final record in history)
+                        ListTile(
+                          leading: const Icon(
+                            Icons.history_rounded,
+                            color: Color(0xFFB85F41),
+                          ),
+                          title: Text(
+                            record['topic'] as String? ?? 'Previous session',
+                          ),
+                          subtitle: Text(
+                            '${record['agreement'] ?? 'Session ended'} · ${record['practice'] == true ? 'Practice' : 'Metherapy'}',
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _court() {
     final cases = store.messages
         .where((message) => message['kind'] == 'court')
-        .toList()
-        .reversed
         .toList();
-    final history = store.courtHistory.where(
-      (record) => !store.messages.any(
-        (message) =>
-            message['recordId'] != null && message['recordId'] == record['id'],
+    DateTime sessionDate(Map<String, dynamic> item) {
+      final value = item['createdAt'];
+      if (value is num) {
+        return DateTime.fromMillisecondsSinceEpoch((value * 1000).round());
+      }
+      return DateTime.tryParse(value?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
+    cases.sort((a, b) => sessionDate(b).compareTo(sessionDate(a)));
+    final history = store.courtHistory
+        .where(
+          (record) => !store.messages.any(
+            (message) =>
+                message['recordId'] != null &&
+                message['recordId'] == record['id'],
+          ),
+        )
+        .toList();
+    history.sort((a, b) => sessionDate(b).compareTo(sessionDate(a)));
+    final sessionCount = cases.length + history.length;
+
+    Widget historyTile(Map<String, dynamic> record) => ListTile(
+      contentPadding: const EdgeInsets.only(left: 50, right: 0),
+      leading: const Icon(Icons.history, color: Color(0xFFB85F41)),
+      title: Text(record['topic'] as String? ?? 'Previous session'),
+      subtitle: Text(
+        '${record['agreement'] ?? 'Session ended'} · ${record['practice'] == true ? 'Practice' : 'Metherapy'}',
       ),
+      isThreeLine: false,
     );
 
     return Stack(
       children: [
-        const Positioned.fill(
-          child: CustomPaint(painter: _CourtBackdropPainter()),
+        Positioned.fill(
+          child: Image.asset(
+            'assets/branding/dreamy_peach_gradient_waves.png',
+            fit: BoxFit.cover,
+          ),
         ),
         ListView(
           padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
@@ -910,7 +1028,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Couple Court',
+                        'Metherapy',
                         style: Theme.of(context).textTheme.headlineMedium
                             ?.copyWith(
                               color: const Color(0xFF542819),
@@ -928,7 +1046,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                         ),
                       ),
                       const Text(
-                        'A softer place to settle your differences.',
+                        'A softer space to understand each other.',
                         style: TextStyle(
                           fontSize: 17,
                           color: Color(0xFF663621),
@@ -966,7 +1084,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Icon(
-                    Icons.gavel_rounded,
+                    Icons.favorite_rounded,
                     size: 54,
                     color: Color(0xFFF18A5B),
                   ),
@@ -982,7 +1100,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                   ),
                   const SizedBox(height: 14),
                   const Text(
-                    'A pixel-art courtroom with evidence, timed questions, rebuttals, a Meta AI judge, compensation requests and appeals.',
+                    'A guided conversation with timed turns, thoughtful questions, optional photos, and a Meta AI relationship facilitator.',
                     style: TextStyle(
                       fontSize: 16,
                       height: 1.45,
@@ -991,7 +1109,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                   ),
                   const SizedBox(height: 22),
                   SizedBox(
-                    width: 260,
+                    width: double.infinity,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
@@ -1011,27 +1129,32 @@ class _CoupleHomeState extends State<CoupleHome> {
                         child: InkWell(
                           borderRadius: BorderRadius.circular(36),
                           onTap: _summon,
-                          child: const Padding(
+                          child: Padding(
                             padding: EdgeInsets.symmetric(
-                              horizontal: 24,
+                              horizontal: 18,
                               vertical: 17,
                             ),
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Text(
-                                  'Summon partner',
-                                  style: TextStyle(
-                                    fontSize: 19,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white,
+                                Flexible(
+                                  child: Text(
+                                    'Invite partner to a session',
+                                    maxLines: 2,
+                                    textAlign: TextAlign.center,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.white,
+                                    ),
                                   ),
                                 ),
-                                SizedBox(width: 12),
+                                SizedBox(width: 6),
                                 Icon(
                                   Icons.chevron_right_rounded,
                                   color: Colors.white,
-                                  size: 28,
+                                  size: 26,
                                 ),
                               ],
                             ),
@@ -1059,7 +1182,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                   const SizedBox(width: 16),
                   const Expanded(
                     child: Text(
-                      'Both partners enter the same summons. Turns, deadlines and acceptances are synchronized by the server.',
+                      'Write what you want to talk about before inviting. Your partner sees the invitation in your conversation, and the shared topic gives the AI facilitator context. Turns are synchronized between phones.',
                       style: TextStyle(
                         fontSize: 15,
                         height: 1.45,
@@ -1090,7 +1213,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                       const SizedBox(width: 16),
                       Expanded(
                         child: Text(
-                          'Your cases',
+                          'Previous sessions',
                           style: Theme.of(context).textTheme.titleLarge
                               ?.copyWith(
                                 color: const Color(0xFF542819),
@@ -1098,9 +1221,9 @@ class _CoupleHomeState extends State<CoupleHome> {
                               ),
                         ),
                       ),
-                      if (cases.isNotEmpty)
+                      if (sessionCount > 0)
                         Text(
-                          '${cases.length}',
+                          '$sessionCount',
                           style: const TextStyle(
                             color: Color(0xFFB85F41),
                             fontWeight: FontWeight.w700,
@@ -1108,29 +1231,26 @@ class _CoupleHomeState extends State<CoupleHome> {
                         ),
                     ],
                   ),
-                  if (cases.isEmpty && history.isEmpty)
+                  if (sessionCount == 0)
                     const Padding(
                       padding: EdgeInsets.only(left: 51, top: 4),
                       child: Text(
-                        'No cases yet. Start with something small.',
+                        'No sessions yet. Start with one thing you would like to understand together.',
                         style: TextStyle(color: Color(0xFF663621)),
                       ),
                     ),
-                  for (final entry in cases) _summonsCard(entry),
-                  for (final record in history)
-                    ListTile(
-                      contentPadding: const EdgeInsets.only(left: 50, right: 0),
-                      leading: const Icon(
-                        Icons.history,
-                        color: Color(0xFFB85F41),
+                  if (cases.isNotEmpty)
+                    _summonsCard(cases.first)
+                  else if (history.isNotEmpty)
+                    historyTile(history.first),
+                  if (sessionCount > 1)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () => _showAllSessions(cases, history),
+                        icon: const Icon(Icons.history_rounded),
+                        label: const Text('See all'),
                       ),
-                      title: Text(
-                        record['topic'] as String? ?? 'Previous case',
-                      ),
-                      subtitle: Text(
-                        '${record['agreement']} · ${record['practice'] == true ? 'Practice' : 'Meta judge'}',
-                      ),
-                      isThreeLine: false,
                     ),
                 ],
               ),
@@ -1140,55 +1260,6 @@ class _CoupleHomeState extends State<CoupleHome> {
       ],
     );
   }
-}
-
-class _CourtBackdropPainter extends CustomPainter {
-  const _CourtBackdropPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = const Color(0xFFFFE7D9);
-    final top = Path()
-      ..moveTo(0, 0)
-      ..lineTo(size.width * .34, 0)
-      ..cubicTo(
-        size.width * .31,
-        size.height * .12,
-        size.width * .18,
-        size.height * .10,
-        0,
-        size.height * .21,
-      )
-      ..close();
-    canvas.drawPath(top, paint);
-
-    final bottomPaint = Paint()..color = const Color(0xFFFFD7C0);
-    final bottom = Path()
-      ..moveTo(0, size.height * .88)
-      ..cubicTo(
-        size.width * .18,
-        size.height * .93,
-        size.width * .22,
-        size.height * .85,
-        size.width * .42,
-        size.height * .91,
-      )
-      ..cubicTo(
-        size.width * .62,
-        size.height * .97,
-        size.width * .76,
-        size.height * .86,
-        size.width,
-        size.height * .91,
-      )
-      ..lineTo(size.width, size.height)
-      ..lineTo(0, size.height)
-      ..close();
-    canvas.drawPath(bottom, bottomPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _ProfileDialog extends StatefulWidget {
@@ -1264,9 +1335,11 @@ class _TextDialog extends StatefulWidget {
     required this.label,
     required this.description,
     required this.action,
+    this.hint,
     this.allowEmpty = false,
   });
   final String title, label, description, action;
+  final String? hint;
   final bool allowEmpty;
   @override
   State<_TextDialog> createState() => _TextDialogState();
@@ -1297,7 +1370,15 @@ class _TextDialogState extends State<_TextDialog> {
               minLines: 2,
               maxLines: 4,
               maxLength: 1000,
-              decoration: InputDecoration(labelText: widget.label),
+              decoration: InputDecoration(
+                labelText: widget.label,
+                hintText: widget.hint,
+                alignLabelWithHint: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
+                ),
+              ),
               validator: (text) =>
                   !widget.allowEmpty && (text == null || text.trim().isEmpty)
                   ? 'Please write a few words.'

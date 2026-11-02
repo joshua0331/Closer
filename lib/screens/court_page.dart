@@ -107,7 +107,7 @@ class _CourtPageState extends State<CourtPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Couple Court'), centerTitle: true),
+      appBar: AppBar(title: const Text('Metherapy'), centerTitle: true),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -34,7 +36,7 @@ class _SignIn extends StatefulWidget {
 
 class _SignInState extends State<_SignIn> {
   final _email = TextEditingController(), _password = TextEditingController();
-  bool _create = false, _busy = false;
+  bool _create = false, _busy = false, _showPassword = false;
   String? _error;
   @override
   void dispose() {
@@ -93,122 +95,374 @@ class _SignInState extends State<_SignIn> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    body: SafeArea(
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Image.asset(
-                  'assets/branding/closer-logo.png',
-                  height: 112,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, error, stack) => const Text(
-                    'closer',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 48, fontWeight: FontWeight.w800),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  _create ? 'Join Closer' : 'Welcome back',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  'One shared space for two. Pair with your partner to share your map, conversations, memories and Couple Court cases across your phones.',
-                ),
-                const SizedBox(height: 24),
-                TextField(
-                  controller: _email,
-                  keyboardType: TextInputType.emailAddress,
-                  autofillHints: const [AutofillHints.email],
-                  decoration: const InputDecoration(labelText: 'Email'),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: _password,
-                  obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Password'),
-                ),
-                const SizedBox(height: 20),
-                if (_error != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Text(_error!),
-                  ),
-                FilledButton(
-                  onPressed: _busy ? null : () => _submit(),
-                  child: Text(
-                    _busy
-                        ? 'Please wait…'
-                        : _create
-                        ? 'Create account'
-                        : 'Sign in',
-                  ),
-                ),
-                TextButton(
-                  onPressed: _busy
-                      ? null
-                      : () => setState(() {
-                          _create = !_create;
-                          _error = null;
-                        }),
-                  child: Text(
-                    _create
-                        ? 'Already have an account? Sign in'
-                        : 'Create an account',
-                  ),
-                ),
-                TextButton(
-                  onPressed: _busy ? null : () => _submit(reset: true),
-                  child: const Text('Forgot password?'),
-                ),
-                ...[
-                  const SizedBox(height: 16),
-                  const Text(
-                    'By continuing, you agree to Closer’s Terms of Service and Privacy Policy.',
-                    textAlign: TextAlign.center,
-                  ),
-                  Wrap(
-                    alignment: WrapAlignment.center,
+  Widget build(BuildContext context) {
+    const ink = Color(0xFF392B27), muted = Color(0xFF806D65);
+    const terracotta = Color(0xFFB85842);
+    final textTheme = Theme.of(context).textTheme;
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF8F0),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Image.asset(
+              'assets/branding/dreamy_peach_gradient_waves.png',
+              fit: BoxFit.cover,
+            ),
+          ),
+          Positioned.fill(
+            child: ColoredBox(color: Colors.white.withValues(alpha: .12)),
+          ),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 440),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      TextButton(
-                        onPressed: () => launchUrl(
-                          Uri.parse(
-                            'https://closer-court-ddf3a.web.app/terms.html',
+                      Image.asset(
+                        'assets/branding/closer-logo.png',
+                        height: 76,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, error, stack) => const Text(
+                          'closer',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 42,
+                            fontWeight: FontWeight.w700,
+                            color: terracotta,
                           ),
                         ),
-                        child: const Text('Terms of service'),
                       ),
-                      TextButton(
-                        onPressed: () => launchUrl(
-                          Uri.parse(
-                            'https://closer-court-ddf3a.web.app/privacy.html',
+                      const SizedBox(height: 24),
+                      Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 13,
+                            vertical: 7,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFE8DE),
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.favorite_rounded,
+                                size: 14,
+                                color: terracotta,
+                              ),
+                              SizedBox(width: 7),
+                              Text(
+                                'YOUR SPACE, TOGETHER',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  letterSpacing: 1.2,
+                                  fontWeight: FontWeight.w700,
+                                  color: terracotta,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        child: const Text('Privacy policy'),
                       ),
-                      TextButton(
-                        onPressed: () => launchUrl(
-                          Uri.parse('mailto:joshuachristianmirang@gmail.com'),
+                      const SizedBox(height: 16),
+                      Text(
+                        _create ? 'Start your story' : 'Welcome back',
+                        textAlign: TextAlign.center,
+                        style: textTheme.headlineMedium?.copyWith(
+                          color: ink,
+                          fontSize: 30,
+                          height: 1.15,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -.6,
                         ),
-                        child: const Text('Help'),
+                      ),
+                      const SizedBox(height: 9),
+                      Text(
+                        _create
+                            ? 'Create your account and make a little more room for us.'
+                            : 'Your shared space is right where you left it.',
+                        textAlign: TextAlign.center,
+                        style: textTheme.bodyMedium?.copyWith(
+                          color: muted,
+                          height: 1.5,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Container(
+                        padding: const EdgeInsets.all(22),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: .94),
+                          borderRadius: BorderRadius.circular(26),
+                          border: Border.all(color: const Color(0xFFF2E3D9)),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x1CB85842),
+                              blurRadius: 28,
+                              offset: Offset(0, 12),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              'EMAIL ADDRESS',
+                              style: textTheme.labelSmall?.copyWith(
+                                color: muted,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.1,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: _email,
+                              keyboardType: TextInputType.emailAddress,
+                              autofillHints: const [AutofillHints.email],
+                              style: const TextStyle(color: ink, fontSize: 15),
+                              decoration: _fieldDecoration(
+                                'you@example.com',
+                                Icons.alternate_email_rounded,
+                              ),
+                            ),
+                            const SizedBox(height: 17),
+                            Text(
+                              'PASSWORD',
+                              style: textTheme.labelSmall?.copyWith(
+                                color: muted,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 1.1,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: _password,
+                              obscureText: !_showPassword,
+                              autofillHints: const [AutofillHints.password],
+                              style: const TextStyle(color: ink, fontSize: 15),
+                              decoration:
+                                  _fieldDecoration(
+                                    'At least 6 characters',
+                                    Icons.lock_outline_rounded,
+                                  ).copyWith(
+                                    suffixIcon: IconButton(
+                                      tooltip: _showPassword
+                                          ? 'Hide password'
+                                          : 'Show password',
+                                      onPressed: () => setState(
+                                        () => _showPassword = !_showPassword,
+                                      ),
+                                      icon: Icon(
+                                        _showPassword
+                                            ? Icons.visibility_off_outlined
+                                            : Icons.visibility_outlined,
+                                        color: muted,
+                                        size: 20,
+                                      ),
+                                    ),
+                                  ),
+                            ),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _submit(reset: true),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: terracotta,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                    vertical: 8,
+                                  ),
+                                ),
+                                child: const Text('Forgot password?'),
+                              ),
+                            ),
+                            if (_error != null)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: Text(
+                                  _error!,
+                                  style: const TextStyle(
+                                    color: Color(0xFFB23E36),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            SizedBox(
+                              height: 52,
+                              child: FilledButton(
+                                onPressed: _busy ? null : () => _submit(),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: terracotta,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
+                                child: _busy
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Text(
+                                            _create
+                                                ? 'Create account'
+                                                : 'Sign in',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 15,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          const Icon(
+                                            Icons.arrow_forward_rounded,
+                                            size: 18,
+                                          ),
+                                        ],
+                                      ),
+                              ),
+                            ),
+                            const SizedBox(height: 9),
+                            Center(
+                              child: TextButton(
+                                onPressed: _busy
+                                    ? null
+                                    : () => setState(() {
+                                        _create = !_create;
+                                        _error = null;
+                                      }),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: ink,
+                                ),
+                                child: Text(
+                                  _create
+                                      ? 'Already have an account?  Sign in'
+                                      : 'New to Closer?  Create an account',
+                                  style: const TextStyle(fontSize: 13),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.favorite_rounded,
+                            color: Color(0xFFE99B84),
+                            size: 14,
+                          ),
+                          SizedBox(width: 7),
+                          Text(
+                            'A little closer, every day',
+                            style: TextStyle(
+                              color: muted,
+                              fontSize: 12,
+                              letterSpacing: .2,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'By continuing, you agree to Closer’s Terms of Service and Privacy Policy.',
+                        textAlign: TextAlign.center,
+                        style: textTheme.labelSmall?.copyWith(
+                          color: muted,
+                          height: 1.45,
+                          fontSize: 10,
+                        ),
+                      ),
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        children: [
+                          TextButton(
+                            onPressed: () => launchUrl(
+                              Uri.parse(
+                                'https://closer-court-ddf3a.web.app/terms.html',
+                              ),
+                            ),
+                            style: TextButton.styleFrom(foregroundColor: muted),
+                            child: const Text(
+                              'Terms',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => launchUrl(
+                              Uri.parse(
+                                'https://closer-court-ddf3a.web.app/privacy.html',
+                              ),
+                            ),
+                            style: TextButton.styleFrom(foregroundColor: muted),
+                            child: const Text(
+                              'Privacy',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => launchUrl(
+                              Uri.parse(
+                                'mailto:joshuachristianmirang@gmail.com',
+                              ),
+                            ),
+                            style: TextButton.styleFrom(foregroundColor: muted),
+                            child: const Text(
+                              'Help',
+                              style: TextStyle(fontSize: 11),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ],
-              ],
+                ),
+              ),
             ),
           ),
-        ),
+        ],
       ),
-    ),
-  );
+    );
+  }
+
+  InputDecoration _fieldDecoration(String hint, IconData icon) =>
+      InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Color(0xFFB5A49C), fontSize: 14),
+        prefixIcon: Icon(icon, color: const Color(0xFFB85842), size: 19),
+        filled: true,
+        fillColor: const Color(0xFFFFFAF6),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 16,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFFEADDD4)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFFB85842), width: 1.5),
+        ),
+      );
 }
 
 class _SharedGate extends StatefulWidget {
@@ -251,6 +505,9 @@ class _SharedGateState extends State<_SharedGate> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       store.resume();
+    } else if (defaultTargetPlatform == TargetPlatform.android &&
+        store.locations.containsKey(store.uid)) {
+      store.resumeBackgroundSharing();
     } else {
       store.pause();
     }

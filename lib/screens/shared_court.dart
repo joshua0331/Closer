@@ -2,18 +2,18 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
-import 'room_chat.dart';
-
 import '../services/photo_media.dart';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:flutter_tts/flutter_tts.dart';
 
 import '../models/cloud_couple_store.dart';
 import '../services/backend_access.dart';
 import '../services/court_performance.dart';
 import '../services/judge_service.dart';
-import 'animated_courtroom.dart';
+import '../services/live_couple_call.dart';
 import 'demo_access_page.dart';
 import 'evidence_highlights.dart';
 
@@ -33,25 +33,25 @@ const _turns = <int, int>{
   15: 0,
 };
 const _titles = [
-  'Requested compensation',
-  'Claimant’s opening',
-  'Respondent’s opening',
-  'Claimant asks a question',
-  'Respondent answers',
-  'Respondent asks a question',
-  'Claimant answers',
-  'Claimant’s rebuttal',
-  'Respondent’s rebuttal',
-  'Questions from Muse Spark',
-  'Claimant answers the judge',
-  'Respondent answers the judge',
-  'Muse Spark reviews the case',
-  'Your first ruling',
-  'Respondent’s appeal grounds',
-  'Claimant responds to the appeal',
-  'Muse Wonder reviews the appeal',
-  'Your appeal ruling',
-  'Case closed',
+  'What would you like to change?',
+  'Your perspective',
+  'Your partner’s perspective',
+  'Ask your partner',
+  'Listen and respond',
+  'Ask a follow-up',
+  'Listen and respond',
+  'What matters most to you?',
+  'What matters most to your partner?',
+  'Questions from Metherapy',
+  'Your reflection',
+  'Your partner’s reflection',
+  'Metherapy is considering both perspectives',
+  'A possible next step',
+  'Ask to revisit the suggestion',
+  'Share what feels unworkable',
+  'Metherapy is taking another look',
+  'An adjusted next step',
+  'Session complete',
 ];
 
 class SharedCourt extends StatefulWidget {
@@ -72,9 +72,22 @@ class SharedCourt extends StatefulWidget {
 
 class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   Map<String, dynamic>? _case;
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  final FlutterTts _therapistVoice = FlutterTts();
+  late final LiveCoupleCall _liveCall;
+  int? _lastSpokenPhase;
+  String? _lastSpokenResponseId;
+  int? _facilitatorAttemptedVersion;
+  int _speechGeneration = 0;
+  Timer? _facilitatorTimer;
+  bool _facilitatorRequestRunning = false;
+  bool _therapistSpeaking = false;
+  bool _listening = false;
+  VoidCallback? _callDetailsRebuild;
   double _clockOffset = 0;
   final _text = TextEditingController(), _caption = TextEditingController();
   Timer? _poll, _clock;
+  int _statePollSeconds = 5;
   bool _busy = false, _loading = false, _inCourtMode = false;
   String? _error;
   final Map<String, String> _photos = {};
@@ -82,24 +95,42 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _liveCall = LiveCoupleCall(widget.store, widget.caseId)
+      ..addListener(_onCallChanged);
+    unawaited(_configureTherapistVoice());
     _refresh();
-    _poll = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+    _poll = Timer.periodic(
+      Duration(seconds: _statePollSeconds),
+      (_) => _refresh(),
+    );
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        _syncCallTurn();
+        setState(() {});
+      }
     });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _liveCall.removeListener(_onCallChanged);
+    _liveCall.dispose();
+    _speechGeneration++;
+    unawaited(_therapistVoice.stop());
+    _facilitatorTimer?.cancel();
+    _callDetailsRebuild = null;
     _poll?.cancel();
     _clock?.cancel();
     _text.dispose();
     _caption.dispose();
-    unawaited(SystemChrome.setPreferredOrientations(const [
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-    ]));
+    unawaited(_speech.stop());
+    unawaited(
+      SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+      ]),
+    );
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     super.dispose();
   }
@@ -107,9 +138,15 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _poll?.cancel();
+    if (state != AppLifecycleState.resumed && _liveCall.joined) {
+      unawaited(_liveCall.end());
+    }
     if (state == AppLifecycleState.resumed) {
       _refresh();
-      _poll = Timer.periodic(const Duration(seconds: 5), (_) => _refresh());
+      _poll = Timer.periodic(
+        Duration(seconds: _statePollSeconds),
+        (_) => _refresh(),
+      );
     }
   }
 
@@ -151,23 +188,12 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     if (entered != _inCourtMode) {
       _inCourtMode = entered;
       unawaited(
-        SystemChrome.setPreferredOrientations(
-          entered
-              ? const [
-                  DeviceOrientation.landscapeLeft,
-                  DeviceOrientation.landscapeRight,
-                ]
-              : const [
-                  DeviceOrientation.portraitUp,
-                  DeviceOrientation.portraitDown,
-                ],
-        ),
+        SystemChrome.setPreferredOrientations(const [
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+        ]),
       );
-      unawaited(
-        SystemChrome.setEnabledSystemUIMode(
-          entered ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-        ),
-      );
+      unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     }
     setState(() {
       _case = data;
@@ -177,12 +203,510 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
             DateTime.now().millisecondsSinceEpoch / 1000;
       }
       _error = null;
-      if (phaseChanged) _text.clear();
+      if (phaseChanged) {
+        _text.clear();
+        if (_listening) {
+          _listening = false;
+          unawaited(_speech.stop());
+        }
+      }
     });
+    if (data['phase'] == 18) {
+      _therapistSpeaking = false;
+      _speechGeneration++;
+      unawaited(_therapistVoice.stop());
+      if (_liveCall.status != 'not_started' && _liveCall.status != 'ended') {
+        unawaited(_liveCall.end());
+      }
+      _syncCallTurn();
+    } else {
+      _syncCallTurn();
+      _maybeSpeakTherapist(data, data['phase'] as int);
+    }
+    _queueFacilitator(data);
+  }
+
+  Future<void> _configureTherapistVoice() async {
+    try {
+      await _therapistVoice.setLanguage('en-US');
+      await _therapistVoice.setSpeechRate(0.47);
+      await _therapistVoice.awaitSpeakCompletion(true);
+    } catch (_) {}
+  }
+
+  void _syncCallTurn() {
+    final current = _case;
+    if (current == null) {
+      _liveCall.setTurnAllowed(false);
+      return;
+    }
+    final phase = current['phase'] as int;
+    final people = current['people'] as List;
+    final role = people.indexOf(widget.store.uid);
+    final deadline = current['deadline'];
+    final hasTime =
+        deadline is! num ||
+        deadline > DateTime.now().millisecondsSinceEpoch / 1000 + _clockOffset;
+    final consent = (current['aiConsent'] as List? ?? const []).length == 2;
+    final aiReady =
+        consent &&
+        current['openingResponseDone'] == true &&
+        current['facilitatorPending'] != true &&
+        current['lease'] == null;
+    _liveCall.setTurnAllowed(
+      _liveCall.connected &&
+          aiReady &&
+          _turns[phase] == role &&
+          hasTime &&
+          phase < 18 &&
+          !_therapistSpeaking &&
+          !_listening,
+    );
+  }
+
+  void _onCallChanged() {
+    if (!mounted) return;
+    final nextPollSeconds = _liveCall.joined && _liveCall.status != 'failed'
+        ? 2
+        : 5;
+    if (nextPollSeconds != _statePollSeconds) {
+      _statePollSeconds = nextPollSeconds;
+      _poll?.cancel();
+      _poll = Timer.periodic(
+        Duration(seconds: _statePollSeconds),
+        (_) => _refresh(),
+      );
+    }
+    _syncCallTurn();
+    final current = _case;
+    if (_liveCall.connected && current != null) {
+      _maybeSpeakTherapist(current, current['phase'] as int);
+    } else if (_liveCall.status == 'ended' || _liveCall.status == 'failed') {
+      _lastSpokenPhase = null;
+      _lastSpokenResponseId = null;
+      _therapistSpeaking = false;
+      _speechGeneration++;
+      unawaited(_therapistVoice.stop());
+    }
+    setState(() {});
+  }
+
+  String? _therapistLine(Map<String, dynamic> data, int phase) {
+    if (phase == 10) {
+      final questions = List<String>.from(
+        data['judgeQuestions'] as List? ?? const [],
+      );
+      final names = List<String>.from(data['names'] as List? ?? const []);
+      if (questions.length != 2 || names.length != 2) return null;
+      return <String>[
+        'I have a question for each of you. ',
+        names[0],
+        ': ',
+        questions[0],
+        ' ',
+        names[1],
+        ': ',
+        questions[1],
+      ].join();
+    }
+    if (phase == 13 || phase == 17) {
+      final ruling = data['ruling'];
+      if (ruling is! Map) return null;
+      final plan = ruling['proposedRemedy'] as String? ?? '';
+      final reflection = ruling['reasoning'] as String? ?? '';
+      return [
+        'Here is a possible next step for you both.',
+        plan,
+        reflection,
+      ].join(' ');
+    }
+    return null;
+  }
+
+  void _maybeSpeakTherapist(Map<String, dynamic> data, int phase) {
+    final responses = data['facilitatorResponses'] as List? ?? const [];
+    final latest = responses.isEmpty ? null : responses.last as Map;
+    final latestId = latest?['id'] as String?;
+    final responseIsNew = latestId != null && latestId != _lastSpokenResponseId;
+    if (!responseIsNew && (!_liveCall.connected || _lastSpokenPhase == phase)) {
+      return;
+    }
+    final line = responseIsNew
+        ? latest!['message'] as String?
+        : _therapistLine(data, phase);
+    if (line == null || line.trim().isEmpty) return;
+    if (responseIsNew) {
+      _lastSpokenResponseId = latestId;
+    } else {
+      _lastSpokenPhase = phase;
+    }
+    final generation = ++_speechGeneration;
+    _therapistSpeaking = true;
+    _syncCallTurn();
+    setState(() {});
+    unawaited(() async {
+      try {
+        await _therapistVoice.stop();
+        await _therapistVoice.speak(
+          line.length > 900
+              ? line.substring(0, 900).replaceRange(900, 900, '…')
+              : line,
+        );
+      } catch (_) {
+      } finally {
+        if (generation == _speechGeneration) {
+          _therapistSpeaking = false;
+          _syncCallTurn();
+          if (mounted) setState(() {});
+        }
+      }
+    }());
+  }
+
+  Future<void> _startVoiceCall() async {
+    try {
+      await _liveCall.join();
+      _syncCallTurn();
+      final current = _case;
+      if (_liveCall.connected && current != null) {
+        _maybeSpeakTherapist(current, current['phase'] as int);
+      }
+    } catch (exception) {
+      if (mounted) {
+        setState(
+          () => _error = exception.toString().replaceFirst('Exception: ', ''),
+        );
+      }
+    }
+  }
+
+  Widget _liveCallPanel({
+    required bool both,
+    required int phase,
+    required int role,
+  }) {
+    if (!both || phase >= 18) return const SizedBox.shrink();
+    final canSpeak = _callTurnAllowed(role, phase);
+    final title = _liveCall.connected
+        ? (_liveCall.muted
+              ? 'Call connected · microphone muted'
+              : 'You’re live')
+        : _liveCall.status == 'failed'
+        ? 'Could not connect'
+        : _liveCall.joined
+        ? 'Waiting for your partner to connect…'
+        : 'Join the three-way voice session';
+    final detail = _liveCall.connected
+        ? 'You hear your partner live. Each phone also reads Metherapy’s replies aloud.'
+        : _liveCall.error ??
+              'Both partners join from their phones. Your mic opens only on your turn.';
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .76),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Colors.white.withValues(alpha: .9)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Icon(
+                _liveCall.connected ? Icons.call_rounded : Icons.call_outlined,
+                color: const Color(0xFFB85842),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: Color(0xFF633322),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      detail,
+                      style: const TextStyle(
+                        color: Color(0xFF80665D),
+                        fontSize: 12,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (!_liveCall.joined || _liveCall.status == 'failed')
+                FilledButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () async {
+                          if (_liveCall.status == 'failed') {
+                            await _liveCall.end();
+                          }
+                          await _startVoiceCall();
+                        },
+                  icon: const Icon(Icons.call_rounded),
+                  label: Text(
+                    _liveCall.status == 'failed' ? 'Try again' : 'Join call',
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFB85842),
+                    foregroundColor: Colors.white,
+                  ),
+                )
+              else if (_liveCall.connected)
+                FilledButton.tonalIcon(
+                  onPressed: canSpeak ? _liveCall.toggleMute : null,
+                  icon: Icon(
+                    _liveCall.muted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                  ),
+                  label: Text(_liveCall.muted ? 'Mic muted' : 'Mute mic'),
+                ),
+              if (_liveCall.joined)
+                OutlinedButton.icon(
+                  onPressed: _liveCall.end,
+                  icon: const Icon(Icons.call_end_rounded),
+                  label: const Text('Leave call'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _callTurnAllowed(int role, int phase) {
+    final current = _case;
+    final deadline = current?['deadline'];
+    final hasTime =
+        deadline is! num ||
+        deadline > DateTime.now().millisecondsSinceEpoch / 1000 + _clockOffset;
+    final consent = (current?['aiConsent'] as List? ?? const []).length == 2;
+    final aiReady =
+        consent &&
+        current?['openingResponseDone'] == true &&
+        current?['facilitatorPending'] != true &&
+        current?['lease'] == null;
+    return _liveCall.connected &&
+        aiReady &&
+        _turns[phase] == role &&
+        hasTime &&
+        phase < 18 &&
+        !_therapistSpeaking &&
+        !_listening;
+  }
+
+  Widget _metherapyConsentCard({required bool hasConsented}) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .78),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: .9)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Let Metherapy join?',
+            style: TextStyle(
+              color: Color(0xFF633322),
+              fontWeight: FontWeight.w700,
+              fontSize: 16,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'After you both agree, Meta AI will welcome you and respond to each submitted turn. It receives the topic and turn text; shared photos and captions are sent when it reviews them. Your live call audio stays between your phones. Meta writes the response, and each phone reads it aloud with its built-in voice.',
+            style: TextStyle(
+              color: Color(0xFF80665D),
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (hasConsented)
+            const Row(
+              children: [
+                Icon(Icons.check_circle_outline, color: Color(0xFFB85842)),
+                SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    'You agreed. Waiting for your partner.',
+                    style: TextStyle(color: Color(0xFF764936)),
+                  ),
+                ),
+              ],
+            )
+          else
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _busy ? null : _consentToMetherapy,
+                icon: const Icon(Icons.graphic_eq_rounded),
+                label: Text(
+                  BackendAccess.instance.connected
+                      ? 'Agree and invite Metherapy'
+                      : 'Connect Meta AI and agree',
+                ),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFB85842),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _therapistResponseCard(Map<String, dynamic> data) {
+    final responses = data['facilitatorResponses'] as List? ?? const [];
+    if (responses.isEmpty) return const SizedBox.shrink();
+    final last = responses.last as Map;
+    // The opening welcome is already spoken by the AI orb. Keep the call
+    // canvas clear until the therapist has a response to the couple's turns.
+    if (last['sourcePhase'] == null) return const SizedBox.shrink();
+    final message = last['message'] as String? ?? '';
+    if (message.isEmpty) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .8),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFFFD5C8)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(
+                Icons.graphic_eq_rounded,
+                color: Color(0xFF168FE0),
+                size: 19,
+              ),
+              SizedBox(width: 7),
+              Text(
+                'Metherapy · Meta AI',
+                style: TextStyle(
+                  color: Color(0xFF633322),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Text(
+            message,
+            style: const TextStyle(
+              color: Color(0xFF44302A),
+              height: 1.4,
+              fontSize: 15,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Spoken aloud by your phone',
+            style: TextStyle(color: Color(0xFF80665D), fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _facilitatorStatusCard(Map<String, dynamic> data) {
+    final lease = data['lease'];
+    final waiting =
+        lease is Map &&
+        lease['until'] is num &&
+        (lease['until'] as num) >
+            DateTime.now().millisecondsSinceEpoch / 1000 + _clockOffset;
+    final retryReady =
+        _facilitatorAttemptedVersion == data['version'] && !waiting && !_busy;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .62),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          if (waiting || _busy)
+            const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Color(0xFF168FE0),
+              ),
+            )
+          else
+            const Icon(Icons.graphic_eq_rounded, color: Color(0xFF168FE0)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              waiting || _busy
+                  ? (data['openingResponseDone'] == true
+                        ? 'Metherapy is listening to the submitted turn and preparing a response…'
+                        : 'Metherapy is preparing a welcome for both of you…')
+                  : retryReady
+                  ? (_error ?? 'Metherapy could not finish. Tap to try again.')
+                  : 'Metherapy is preparing a welcome for both of you…',
+              style: const TextStyle(
+                color: Color(0xFF633322),
+                fontSize: 13,
+                height: 1.35,
+              ),
+            ),
+          ),
+          if (!waiting && !BackendAccess.instance.connected)
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () async {
+                      if (await _ensureAiConnection() &&
+                          mounted &&
+                          _case != null) {
+                        _queueFacilitator(_case!);
+                      }
+                    },
+              child: const Text('Connect'),
+            )
+          else if (retryReady)
+            IconButton(
+              tooltip: 'Retry Metherapy',
+              onPressed: _busy ? null : () => _requestFacilitator(retry: true),
+              icon: const Icon(Icons.refresh_rounded),
+              color: const Color(0xFFB85842),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _act(String operation, {Map<String, dynamic>? extra}) async {
-    if (_busy || _case == null) return;
+    if ((_busy && operation != 'end') || _case == null) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -203,13 +727,47 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _portrait() async {
-    final consent = await showDialog<bool>(
+  Future<bool> _ensureAiConnection() async {
+    if (!BackendAccess.instance.connected && widget.store.roomSession != null) {
+      try {
+        await BackendAccess.instance.connectRoom(widget.store.roomSession!);
+      } catch (_) {
+        if (mounted) {
+          setState(
+            () => _error =
+                'Room AI access is unavailable or its allowance has expired.',
+          );
+        }
+        return false;
+      }
+    }
+    if (!mounted) return false;
+    if (!BackendAccess.instance.connected) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(builder: (_) => const DemoAccessPage()),
+      );
+      if (mounted) setState(() {});
+      return BackendAccess.instance.connected;
+    }
+    return true;
+  }
+
+  Future<void> _consentToMetherapy() async {
+    final existing = _case;
+    if (existing == null ||
+        (existing['aiConsent'] as List? ?? const []).contains(
+          widget.store.uid,
+        )) {
+      return;
+    }
+    if (!await _ensureAiConnection() || !mounted) return;
+    final agreed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Use your portrait for courtroom art?'),
+        title: const Text('Invite Metherapy into this session?'),
         content: const Text(
-          'Your photo is shared with your paired partner and may be sent with their separately consented portrait to Meta Muse Image to redraw you both as pixel-art characters. Portraits are not evidence. Use only a photo you have permission to share.',
+          'If both of you agree, Metherapy will receive the topic and the text each of you submits. Photos and captions are sent when Metherapy is asked to review them. Your live call audio stays between your phones; Meta receives the submitted text, not the call audio. Meta writes the words, and your phone reads them aloud with its built-in voice.',
         ),
         actions: [
           TextButton(
@@ -218,127 +776,79 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Choose my portrait'),
+            child: const Text('I agree'),
           ),
         ],
       ),
     );
-    if (consent != true || !mounted) return;
-    final photo = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 512,
-      maxHeight: 512,
-      imageQuality: 75,
-    );
-    if (photo == null || !mounted) return;
-    if (await photo.length() > 1000000) {
-      if (mounted) {
-        setState(() => _error = 'Choose a portrait smaller than 1 MB.');
-      }
+    if (agreed == true) await _act('ai_consent');
+  }
+
+  void _queueFacilitator(Map<String, dynamic> data) {
+    final lease = data['lease'];
+    final leaseActive =
+        lease is Map &&
+        lease['until'] is num &&
+        (lease['until'] as num) >
+            DateTime.now().millisecondsSinceEpoch / 1000 + _clockOffset;
+    if (!BackendAccess.instance.connected ||
+        (data['aiConsent'] as List? ?? const []).length != 2 ||
+        data['facilitatorPending'] != true ||
+        leaseActive) {
       return;
     }
-    setState(() => _busy = true);
-    String? id;
+    final version = data['version'] as int?;
+    if (version == null ||
+        version == _facilitatorAttemptedVersion ||
+        _facilitatorRequestRunning) {
+      return;
+    }
+    _facilitatorTimer?.cancel();
+    _facilitatorTimer = Timer(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      if (_busy || _loading) {
+        _queueFacilitator(_case ?? data);
+        return;
+      }
+      unawaited(_requestFacilitator());
+    });
+  }
+
+  Future<void> _requestFacilitator({bool retry = false}) async {
+    final current = _case;
+    if (current == null || _facilitatorRequestRunning) return;
+    final version = current['version'] as int;
+    if (retry) _facilitatorAttemptedVersion = null;
+    if (_facilitatorAttemptedVersion == version) return;
+    if (!BackendAccess.instance.connected && !await _ensureAiConnection()) {
+      return;
+    }
+    if (!mounted) return;
+    _facilitatorAttemptedVersion = version;
+    _facilitatorRequestRunning = true;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      id = await widget.store.upload(photo.path);
-    } catch (_) {
-      if (mounted) setState(() => _error = 'Portrait upload failed.');
+      final operation = current['openingResponseDone'] == true
+          ? 'facilitate'
+          : 'opening';
+      final data = await widget.store.hearing(
+        widget.caseId,
+        body: {'operation': operation, 'version': version},
+      );
+      await _apply(data);
+      await widget.store.refresh();
+    } catch (e) {
+      final message = e.toString().replaceFirst('Exception: ', '');
+      if (mounted && !message.toLowerCase().contains('already preparing')) {
+        setState(() => _error = message);
+      }
     } finally {
+      _facilitatorRequestRunning = false;
       if (mounted) setState(() => _busy = false);
     }
-    if (id != null) {
-      await _act('portrait', extra: {'photoId': id, 'consent': true});
-    }
-  }
-
-  Future<void> _art() async {
-    if (!BackendAccess.instance.connected && widget.store.roomSession != null) {
-      try {
-        await BackendAccess.instance.connectRoom(widget.store.roomSession!);
-      } catch (_) {
-        if (mounted) {
-          setState(
-            () => _error =
-                'Room AI access is unavailable or its allowance has expired.',
-          );
-        }
-        return;
-      }
-    }
-    if (!mounted) return;
-    if (!BackendAccess.instance.connected) {
-      await Navigator.push(
-        context,
-        MaterialPageRoute<void>(builder: (_) => const DemoAccessPage()),
-      );
-      if (mounted) setState(() {});
-      return;
-    }
-    final agreed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Send both portraits to Meta Muse Image?'),
-        content: const Text(
-          'This sends both selfies and the courtroom reference through the backend to Meta to generate your courtroom art. Confirm both people agree and have permission to share these photos.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Generate artwork'),
-          ),
-        ],
-      ),
-    );
-    if (agreed == true) await _act('art');
-  }
-
-  Future<void> _review() async {
-    if (!BackendAccess.instance.connected && widget.store.roomSession != null) {
-      try {
-        await BackendAccess.instance.connectRoom(widget.store.roomSession!);
-      } catch (_) {
-        if (mounted) {
-          setState(
-            () => _error =
-                'Room AI access is unavailable or its allowance has expired.',
-          );
-        }
-        return;
-      }
-    }
-    if (!mounted) return;
-    if (!BackendAccess.instance.connected) {
-      await Navigator.push(
-        context,
-        MaterialPageRoute<void>(builder: (_) => const DemoAccessPage()),
-      );
-      if (mounted) setState(() {});
-      return;
-    }
-    final agreed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Send the shared case to Meta?'),
-        content: const Text(
-          'This sends both names, testimony, requested remedy and original evidence photos to Meta through Couple Court’s backend. Confirm you have permission. The proposed outcome is voluntary and photos cannot establish authenticity.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Ask the judge'),
-          ),
-        ],
-      ),
-    );
-    if (agreed == true) await _act('review');
   }
 
   Future<void> _attach() async {
@@ -359,12 +869,12 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final caption = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Describe this exhibit'),
+        title: const Text('Add a photo for context'),
         content: TextField(
           controller: _caption,
           maxLength: 500,
           decoration: const InputDecoration(
-            labelText: 'Caption · a claim, not verified fact',
+            labelText: 'What should the facilitator know about this photo?',
           ),
         ),
         actions: [
@@ -395,24 +905,6 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     _caption.clear();
   }
 
-
-  Future<void> _sendCourtChat() async {
-    final message = _text.text.trim();
-    if (_busy || message.isEmpty) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      await widget.store.addMessage(message);
-      if (mounted) _text.clear();
-    } catch (_) {
-      if (mounted) setState(() => _error = 'Message not sent. Retry.');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   Future<void> _openEvidence(Map exhibit) async {
     final photoId = exhibit['photoId'] as String?;
     final path = photoId == null ? null : _photos[photoId];
@@ -435,26 +927,36 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   }
 
   Future<void> _pauseMenu() async {
-    final leave = await showDialog<bool>(
+    final ended = _case?['phase'] == 18;
+    final action = await showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Court menu'),
-        content: const Text(
-          'The shared turn timer keeps running while this screen is open.',
+        title: const Text('Metherapy session'),
+        content: Text(
+          ended ? 'This session has ended and can’t be re-entered.' : 'Leaving this screen keeps the session open. End it for both of you to close it permanently; an ended session can’t be re-entered.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Stay in court'),
+            onPressed: () => Navigator.pop(dialogContext, 'stay'),
+            child: const Text('Stay in session'),
           ),
-          FilledButton.tonal(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Leave court'),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, 'leave'),
+            child: const Text('Leave screen'),
           ),
+          if (!ended)
+            FilledButton.tonal(
+              onPressed: () => Navigator.pop(dialogContext, 'end'),
+              child: const Text('End for both'),
+            ),
         ],
       ),
     );
-    if (leave == true && mounted) {
+    if (action == 'end') {
+      await _act('end');
+      return;
+    }
+    if (action == 'leave' && mounted) {
       if (widget.onLobby != null) {
         widget.onLobby!();
       } else {
@@ -463,31 +965,198 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     }
   }
 
-  Widget _gameChatLine(String speaker, String message, Color accent) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 2),
-    child: Row(
-      children: [
-        Text(
-          '$speaker  ',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: accent,
-            fontWeight: FontWeight.bold,
-            fontSize: 12,
-          ),
+  Future<void> _toggleListening(bool canSpeak) async {
+    if (!canSpeak || _busy) return;
+    if (_listening) {
+      await _speech.stop();
+      if (mounted) {
+        setState(() => _listening = false);
+        _syncCallTurn();
+        _callDetailsRebuild?.call();
+      }
+      return;
+    }
+    try {
+      final available = await _speech.initialize(
+        onStatus: (status) {
+          if (status == 'done' || status == 'notListening') {
+            if (mounted) {
+              setState(() => _listening = false);
+              _syncCallTurn();
+              _callDetailsRebuild?.call();
+            }
+          }
+        },
+        onError: (error) {
+          if (mounted) {
+            setState(() {
+              _listening = false;
+              _error = 'Speech input stopped. You can type your turn instead.';
+            });
+            _syncCallTurn();
+            _callDetailsRebuild?.call();
+          }
+        },
+      );
+      if (!available || !mounted) {
+        if (mounted) {
+          setState(
+            () => _error =
+                'Speech input is unavailable. You can type your turn instead.',
+          );
+        }
+        return;
+      }
+      _text.clear();
+      setState(() {
+        _listening = true;
+        _error = null;
+      });
+      _syncCallTurn();
+      _callDetailsRebuild?.call();
+      await _speech.listen(
+        onResult: (result) {
+          if (!mounted) return;
+          setState(() => _text.text = result.recognizedWords);
+          _callDetailsRebuild?.call();
+        },
+        listenOptions: stt.SpeechListenOptions(
+          listenFor: Duration(seconds: 60),
+          pauseFor: Duration(seconds: 3),
         ),
-        Expanded(
-          child: Text(
-            message,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white, fontSize: 12),
-          ),
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _listening = false;
+          _error =
+              'Speech input is unavailable. You can type your turn instead.';
+        });
+      }
+    }
+  }
+
+  Widget _metherapyNameBubble({double fontSize = 15}) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: .26),
+      border: Border.all(color: Colors.white.withValues(alpha: .58)),
+      borderRadius: BorderRadius.circular(24),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.white.withValues(alpha: .12),
+          blurRadius: 12,
+          spreadRadius: 1,
         ),
       ],
     ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          'Metherapy',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w700,
+            fontSize: fontSize,
+          ),
+        ),
+        const SizedBox(width: 7),
+        const Icon(Icons.verified_rounded, color: Color(0xFF20A9F4), size: 20),
+      ],
+    ),
   );
+
+  Widget _partnerOrb({
+    required int index,
+    required int role,
+    required List<String> names,
+    required int activeSpeaker,
+    required bool muted,
+    required double diameter,
+  }) {
+    final path = index == role
+        ? widget.store.avatarPath
+        : widget.store.partnerAvatarPath;
+    final active = activeSpeaker == index;
+    return SizedBox(
+      width: diameter + 24,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            constraints: BoxConstraints(maxWidth: diameter + 16),
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: .26),
+              border: Border.all(color: Colors.white.withValues(alpha: .55)),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.white.withValues(alpha: .10),
+                  blurRadius: 12,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: Text(
+              names[index],
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+                fontSize: 15,
+              ),
+            ),
+          ),
+          const SizedBox(height: 9),
+          _PulseAvatar(
+            active: active,
+            size: diameter,
+            blue: false,
+            child: ClipOval(
+              child: path == null
+                  ? Container(
+                      color: const Color(0xFFFFF7F0),
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        Icons.person_rounded,
+                        size: 44,
+                        color: Color(0xFF9B654E),
+                      ),
+                    )
+                  : photoImage(path, fit: BoxFit.cover),
+            ),
+          ),
+          const SizedBox(height: 9),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                muted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                size: 14,
+                color: muted
+                    ? const Color(0xFF9A786C)
+                    : const Color(0xFFE97859),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                muted ? 'Mic muted' : 'Your turn',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: muted
+                      ? const Color(0xFF80665D)
+                      : const Color(0xFFB85842),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _gameCourt(
     BuildContext context,
@@ -499,645 +1168,1242 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     required bool myTurn,
     required Map? ruling,
   }) {
-    final size = MediaQuery.sizeOf(context);
+    if (_liveCall.connected) {
+      return _connectedCallView(
+        c,
+        phase: phase,
+        role: role,
+        both: both,
+        seconds: seconds,
+        myTurn: myTurn,
+        ruling: ruling,
+      );
+    }
+    return _sessionRoomView(
+      context,
+      c,
+      phase: phase,
+      role: role,
+      both: both,
+      seconds: seconds,
+      myTurn: myTurn,
+      ruling: ruling,
+    );
+  }
+
+  Widget _callParticipant({
+    required int index,
+    required int role,
+    required List<String> names,
+    required int activeSpeaker,
+    required double diameter,
+    required Color badgeColor,
+  }) {
+    final path = index == role
+        ? widget.store.avatarPath
+        : widget.store.partnerAvatarPath;
+    final active = activeSpeaker == index;
+    return SizedBox(
+      width: diameter + 28,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            constraints: BoxConstraints(maxWidth: diameter + 20),
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: .26),
+              border: Border.all(color: Colors.white.withValues(alpha: .48)),
+              borderRadius: BorderRadius.circular(28),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    names[index],
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(Icons.verified_rounded, color: badgeColor, size: 19),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          _PulseAvatar(
+            active: active,
+            size: diameter,
+            blue: false,
+            child: ClipOval(
+              child: path == null
+                  ? Container(
+                      color: const Color(0xFFFFF7F0),
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        Icons.person_rounded,
+                        size: 52,
+                        color: Color(0xFF9B654E),
+                      ),
+                    )
+                  : photoImage(path, fit: BoxFit.cover),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _connectedCallView(
+    Map<String, dynamic> c, {
+    required int phase,
+    required int role,
+    required bool both,
+    required int seconds,
+    required bool myTurn,
+    required Map? ruling,
+  }) {
     final names = List<String>.from(c['names'] as List);
-    final people = List<String>.from(c['people'] as List);
-    final evidence = c['evidence'] as List? ?? const [];
-    final portraits = c['portraits'] as List? ?? const [];
-    final roomChat = widget.store.messages
-        .where(
-          (message) =>
-              message['kind'] != 'court' &&
-              (message['text'] as String? ?? '').trim().isNotEmpty,
-        )
-        .toList();
-    final recentChat = roomChat.length > 2
-        ? roomChat.sublist(roomChat.length - 2)
-        : roomChat;
-    final line = hearingLine(c);
-    final currentSpeaker = line.speaker == 2
-        ? (phase >= 14 ? 'Judge · Muse Wonder' : 'Judge · Muse Spark')
-        : names[line.speaker.clamp(0, names.length - 1)];
-    final canSubmit =
-        both && _turns.containsKey(phase) && myTurn && seconds > 0;
-    final canContinue =
-        both && _turns.containsKey(phase) && myTurn && seconds == 0;
-    final canAddEvidence = phase == 0 ||
-        (both && phase <= 8 && myTurn && seconds > 0);
-    final panelHeight = (size.height * .39).clamp(132.0, 184.0);
-    final peopleWidth = (size.width * .17).clamp(128.0, 178.0);
-    final evidenceWidth = (size.width * .115).clamp(70.0, 94.0);
-    final timerActive = c['deadline'] != null && phase < 13 && phase != 12;
-    final minuteText = (seconds ~/ 60).toString().padLeft(2, '0');
-    final secondText = (seconds % 60).toString().padLeft(2, '0');
-    final timeText = timerActive ? '$minuteText:$secondText' : '--:--';
-    final approved =
-        (c['approved'] as List? ?? const []).contains(widget.store.uid);
-    const hudGold = Color(0xFFF4BD63);
-    const hudBase = Color(0xE9171723);
-    const hudBorder = Color(0xFF8C613F);
+    final aiConsent = c['aiConsent'] as List? ?? const [];
+    final bothConsented = aiConsent.length == 2;
+    final myConsent = aiConsent.contains(widget.store.uid);
+    final activeSpeaker = _therapistSpeaking || c['facilitatorPending'] == true
+        ? 2
+        : _turns.containsKey(phase)
+        ? _turns[phase]!
+        : 2;
+    final callCanSpeak = _callTurnAllowed(role, phase);
+    final prompt = _titles[phase];
+    final callStatus = _therapistSpeaking
+        ? 'Metherapy is speaking'
+        : c['facilitatorPending'] == true
+        ? 'Metherapy is preparing a response'
+        : _turns.containsKey(phase)
+        ? (myTurn
+              ? 'Your turn · tap to respond'
+              : '${names[_turns[phase]!]} is speaking')
+        : (phase == 18 ? 'Session complete' : prompt);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF17151D),
+      backgroundColor: const Color(0xFFFFA998),
       body: Stack(
         fit: StackFit.expand,
         children: [
-          AnimatedCourtroom(store: widget.store, hearing: c),
-
-          // Compact case banner.
-          Positioned(
-            top: 8,
-            left: 10,
-            right: 188,
-            child: SafeArea(
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Container(
-                  constraints: BoxConstraints(maxWidth: size.width * .48),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: hudBase,
-                    border: Border.all(color: hudGold, width: 1.5),
-                    borderRadius: BorderRadius.circular(13),
-                    boxShadow: const [
-                      BoxShadow(color: Color(0x77000000), blurRadius: 8),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
+          const _MetherapyBackdrop(),
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final aiSize = (constraints.maxWidth * .48)
+                    .clamp(180.0, 300.0)
+                    .toDouble();
+                final participantSize = (constraints.maxWidth * .32)
+                    .clamp(112.0, 220.0)
+                    .toDouble();
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
+                  child: Column(
                     children: [
-                      const Icon(
-                        Icons.balance_rounded,
-                        color: hudGold,
-                        size: 27,
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 11,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: .22),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: .60),
+                          ),
+                          borderRadius: BorderRadius.circular(32),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Metherapy',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 19,
+                              ),
+                            ),
+                            SizedBox(width: 8),
+                            Icon(
+                              Icons.verified_rounded,
+                              color: Color(0xFF20A9F4),
+                              size: 23,
+                            ),
+                          ],
+                        ),
                       ),
-                      const SizedBox(width: 10),
-                      Flexible(
-                        child: Text(
-                          'CASE 01  ·  ${c['topic'] as String? ?? 'Our hearing'}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 14,
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            children: [
+                              SizedBox(height: constraints.maxHeight * .025),
+                              _metherapyNameBubble(fontSize: 17),
+                              const SizedBox(height: 9),
+                              _PulseAvatar(
+                                active: activeSpeaker == 2,
+                                size: aiSize,
+                                blue: true,
+                                child: const Center(
+                                  child: Text(
+                                    'AI',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 40,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: 1.2,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              SizedBox(height: constraints.maxHeight * .035),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceEvenly,
+                                children: [
+                                  _callParticipant(
+                                    index: 0,
+                                    role: role,
+                                    names: names,
+                                    activeSpeaker: activeSpeaker,
+                                    diameter: participantSize,
+                                    badgeColor: const Color(0xFF8E62F5),
+                                  ),
+                                  _callParticipant(
+                                    index: 1,
+                                    role: role,
+                                    names: names,
+                                    activeSpeaker: activeSpeaker,
+                                    diameter: participantSize,
+                                    badgeColor: const Color(0xFFEC5B87),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 18),
+                              if (both && !bothConsented)
+                                _metherapyConsentCard(hasConsented: myConsent)
+                              else if (both && c['facilitatorPending'] == true)
+                                _facilitatorStatusCard(c)
+                              else if (ruling != null)
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(13),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: .65),
+                                    borderRadius: BorderRadius.circular(18),
+                                  ),
+                                  child: Text(
+                                    ruling['proposedRemedy'] as String? ?? '',
+                                    textAlign: TextAlign.center,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF633322),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              if (both && bothConsented)
+                                TextButton(
+                                  onPressed: () => _openCallDetails(
+                                    c,
+                                    phase: phase,
+                                    role: role,
+                                    seconds: seconds,
+                                    myTurn: myTurn,
+                                    ruling: ruling,
+                                  ),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: const Color(0xFF6E3929),
+                                  ),
+                                  child: Text(
+                                    callStatus,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                )
+                              else if (!both)
+                                Text(
+                                  'Waiting for ${names[role == 0 ? 1 : 0]} to join',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Color(0xFF764936),
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
                       ),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            _roundCallButton(
+                              icon: _liveCall.muted
+                                  ? Icons.mic_off_rounded
+                                  : Icons.mic_rounded,
+                              enabled: callCanSpeak,
+                              tooltip: _liveCall.muted
+                                  ? 'Turn on microphone'
+                                  : 'Mute microphone',
+                              onPressed: _liveCall.toggleMute,
+                            ),
+                            if (both &&
+                                bothConsented &&
+                                _turns.containsKey(phase))
+                              TextButton.icon(
+                                onPressed: () => _openCallDetails(
+                                  c,
+                                  phase: phase,
+                                  role: role,
+                                  seconds: seconds,
+                                  myTurn: myTurn,
+                                  ruling: ruling,
+                                ),
+                                icon: const Icon(Icons.edit_note_rounded),
+                                label: Text(
+                                  myTurn ? 'Respond' : 'Session details',
+                                ),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF6E3929),
+                                ),
+                              )
+                            else
+                              const SizedBox(width: 112),
+                            _roundCallButton(
+                              icon: Icons.close_rounded,
+                              enabled: true,
+                              tooltip: 'Leave session',
+                              onPressed: _pauseMenu,
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
+        ],
+      ),
+    );
+  }
 
-          // Live timer and pause menu.
-          Positioned(
-            top: 8,
-            right: 10,
-            child: SafeArea(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 7,
-                    ),
-                    decoration: BoxDecoration(
-                      color: hudBase,
-                      border: Border.all(color: hudGold, width: 1.5),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
+  Widget _roundCallButton({
+    required IconData icon,
+    required bool enabled,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) => Container(
+    width: 78,
+    height: 78,
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: enabled ? .24 : .10),
+      shape: BoxShape.circle,
+      border: Border.all(
+        color: Colors.white.withValues(alpha: .45),
+        width: 1.5,
+      ),
+    ),
+    child: IconButton(
+      onPressed: enabled ? onPressed : null,
+      tooltip: tooltip,
+      icon: Icon(
+        icon,
+        color: enabled ? Colors.white : Colors.white54,
+        size: 31,
+      ),
+    ),
+  );
+
+  Future<void> _openCallDetails(
+    Map<String, dynamic> c, {
+    required int phase,
+    required int role,
+    required int seconds,
+    required bool myTurn,
+    required Map? ruling,
+  }) async {
+    final names = List<String>.from(c['names'] as List);
+    final topic = (c['topic'] as String? ?? '').trim();
+    final aiConsent = c['aiConsent'] as List? ?? const [];
+    final bothConsented = aiConsent.length == 2;
+    final myConsent = aiConsent.contains(widget.store.uid);
+    final canSubmit =
+        bothConsented &&
+        c['openingResponseDone'] == true &&
+        c['facilitatorPending'] != true &&
+        c['lease'] == null &&
+        myTurn &&
+        _turns.containsKey(phase) &&
+        seconds > 0;
+    final canContinue =
+        bothConsented &&
+        c['openingResponseDone'] == true &&
+        c['facilitatorPending'] != true &&
+        myTurn &&
+        _turns.containsKey(phase) &&
+        seconds == 0;
+    final canAddPhoto =
+        bothConsented && (phase == 0 || (phase <= 8 && myTurn && seconds > 0));
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        final inset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            _callDetailsRebuild = () => setSheetState(() {});
+            return Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(sheetContext).height * .86,
+              ),
+              decoration: const BoxDecoration(
+                color: Color(0xFFFFF9F2),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(20, 12, 20, 16 + inset),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(
-                          Icons.timer_outlined,
-                          color: hudGold,
-                          size: 24,
+                        Center(
+                          child: Container(
+                            width: 42,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDAB8A9),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          timeText,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                        const SizedBox(height: 18),
+                        const Text(
+                          'Session details',
+                          style: TextStyle(
+                            color: Color(0xFF633322),
+                            fontWeight: FontWeight.w700,
                             fontSize: 20,
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Material(
-                    color: hudBase,
-                    shape: RoundedRectangleBorder(
-                      side: const BorderSide(color: hudBorder, width: 1.5),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: IconButton(
-                      onPressed: _pauseMenu,
-                      tooltip: 'Court menu',
-                      color: Colors.white,
-                      icon: const Icon(Icons.pause_rounded),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Evidence tray.
-          Positioned(
-            left: 10,
-            top: 72,
-            bottom: panelHeight + 18,
-            width: evidenceWidth,
-            child: Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: hudBase,
-                border: Border.all(color: hudBorder, width: 1.5),
-                borderRadius: BorderRadius.circular(13),
-              ),
-              child: Column(
-                children: [
-                  const Icon(
-                    Icons.folder_open_rounded,
-                    color: hudGold,
-                    size: 19,
-                  ),
-                  const SizedBox(height: 3),
-                  const Text(
-                    'EVIDENCE',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 9,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: .5,
-                    ),
-                  ),
-                  const Divider(color: hudBorder, height: 12),
-                  Expanded(
-                    child: ListView(
-                      padding: EdgeInsets.zero,
-                      children: [
-                        for (final raw in evidence)
-                          Builder(
-                            builder: (context) {
-                              final exhibit = raw as Map;
-                              final photoId =
-                                  exhibit['photoId'] as String?;
-                              final path = photoId == null
-                                  ? null
-                                  : _photos[photoId];
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 7),
-                                child: Tooltip(
-                                  message:
-                                      '${exhibit['id']}: ${exhibit['caption']}',
-                                  child: InkWell(
-                                    onTap: () => _openEvidence(exhibit),
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: Container(
-                                      height: 47,
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF343342),
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(
-                                          color: hudGold,
-                                          width: 1,
-                                        ),
-                                      ),
-                                      clipBehavior: Clip.antiAlias,
-                                      child: path == null
-                                          ? const Icon(
-                                              Icons.image_outlined,
-                                              color: Colors.white70,
-                                            )
-                                          : photoImage(
-                                              path,
-                                              fit: BoxFit.cover,
-                                            ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                      ],
-                    ),
-                  ),
-                  if (canAddEvidence)
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      onPressed: _busy ? null : _attach,
-                      tooltip: 'Add evidence',
-                      color: hudGold,
-                      icon: const Icon(Icons.add_photo_alternate_outlined),
-                    ),
-                ],
-              ),
-            ),
-          ),
-
-          // Couple and judge roster.
-          Positioned(
-            right: 10,
-            top: 76,
-            bottom: panelHeight + 18,
-            width: peopleWidth,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
-              decoration: BoxDecoration(
-                color: hudBase,
-                border: Border.all(color: hudBorder, width: 1.5),
-                borderRadius: BorderRadius.circular(13),
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(
-                          Icons.groups_rounded,
-                          color: hudGold,
-                          size: 18,
-                        ),
-                        SizedBox(width: 6),
-                        Text(
-                          'PEOPLE',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 7),
-                    for (var i = 0; i < 2; i++)
-                      Builder(
-                        builder: (context) {
-                          final id = i < portraits.length
-                              ? portraits[i] as String?
-                              : null;
-                          final path = id == null ? null : _photos[id];
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Row(
+                        const SizedBox(height: 12),
+                        if (topic.isNotEmpty)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(13),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFE9DE),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Container(
-                                  width: 29,
-                                  height: 29,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                      color: i == 0
-                                          ? const Color(0xFFFF829B)
-                                          : const Color(0xFF7BC8F5),
-                                      width: 2,
-                                    ),
+                                const Text(
+                                  'TODAY’S TOPIC',
+                                  style: TextStyle(
+                                    color: Color(0xFF9C5B45),
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 10,
+                                    letterSpacing: 1,
                                   ),
-                                  clipBehavior: Clip.antiAlias,
-                                  child: path == null
-                                      ? CircleAvatar(
-                                          backgroundColor:
-                                              const Color(0xFF5C4850),
-                                          child: Text(
-                                            names[i].isEmpty
-                                                ? '?'
-                                                : names[i][0].toUpperCase(),
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        )
-                                      : photoImage(
-                                          path,
-                                          fit: BoxFit.cover,
-                                        ),
                                 ),
-                                const SizedBox(width: 7),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        names[i],
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      Text(
-                                        i == 0 ? 'Claimant' : 'Respondent',
-                                        maxLines: 1,
-                                        style: TextStyle(
-                                          color: i == 0
-                                              ? const Color(0xFFFF829B)
-                                              : const Color(0xFF7BC8F5),
-                                          fontSize: 9,
-                                        ),
-                                      ),
-                                    ],
+                                const SizedBox(height: 4),
+                                Text(
+                                  topic,
+                                  style: const TextStyle(
+                                    color: Color(0xFF603525),
                                   ),
                                 ),
                               ],
                             ),
-                          );
-                        },
-                      ),
-                    const Divider(color: hudBorder, height: 12),
-                    Row(
-                      children: [
-                        const CircleAvatar(
-                          radius: 14,
-                          backgroundColor: Color(0xFF6B4A32),
-                          child: Icon(
-                            Icons.gavel_rounded,
-                            color: hudGold,
-                            size: 15,
                           ),
-                        ),
-                        const SizedBox(width: 7),
-                        Expanded(
-                          child: Text(
-                            phase >= 14 ? 'Muse Wonder' : 'Muse Spark',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
+                        if (!bothConsented) ...[
+                          const SizedBox(height: 12),
+                          _metherapyConsentCard(hasConsented: myConsent),
+                        ] else if (c['facilitatorPending'] == true) ...[
+                          const SizedBox(height: 12),
+                          _facilitatorStatusCard(c),
+                        ] else if (bothConsented) ...[
+                          const SizedBox(height: 12),
+                          _therapistResponseCard(c),
+                        ],
+                        if (ruling != null) ...[
+                          const Text(
+                            'A possible shared next step',
+                            style: TextStyle(
+                              color: Color(0xFFB85842),
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
+                          const SizedBox(height: 5),
+                          Text(
+                            ruling['proposedRemedy'] as String? ?? '',
+                            style: const TextStyle(color: Color(0xFF4B3329)),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        if (phase == 13 || phase == 17)
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              FilledButton(
+                                onPressed:
+                                    _busy ||
+                                        (c['approved'] as List? ?? const [])
+                                            .contains(widget.store.uid)
+                                    ? null
+                                    : () {
+                                        Navigator.pop(sheetContext);
+                                        _act('accept');
+                                      },
+                                child: const Text('Try this next step'),
+                              ),
+                              if (phase == 13 && role == 1)
+                                OutlinedButton(
+                                  onPressed: _busy
+                                      ? null
+                                      : () {
+                                          Navigator.pop(sheetContext);
+                                          _act('appeal');
+                                        },
+                                  child: const Text('Ask to revisit it'),
+                                ),
+                              TextButton(
+                                onPressed: _busy
+                                    ? null
+                                    : () {
+                                        Navigator.pop(sheetContext);
+                                        _act('decline');
+                                      },
+                                child: const Text('Not ready to agree'),
+                              ),
+                            ],
+                          )
+                        else if (phase == 18)
+                          Text(
+                            c['closedStatus'] == 'accepted'
+                                ? 'You both chose this next step. This session has ended and can’t be re-entered.'
+                                : 'This session has ended and can’t be re-entered.',
+                            style: const TextStyle(color: Color(0xFF764936)),
+                          )
+                        else if (canContinue)
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: _busy
+                                  ? null
+                                  : () {
+                                      Navigator.pop(sheetContext);
+                                      _act('turn');
+                                    },
+                              child: const Text('Continue to the next turn'),
+                            ),
+                          )
+                        else if (canSubmit) ...[
+                          Text(
+                            _titles[phase],
+                            style: const TextStyle(
+                              color: Color(0xFF633322),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextField(
+                            controller: _text,
+                            minLines: 2,
+                            maxLines: 4,
+                            maxLength: phase == 0 ? 1000 : 2000,
+                            onChanged: (_) => setSheetState(() {}),
+                            decoration: InputDecoration(
+                              hintText: _listening ? 'Listening…' : 'Share what you would like your partner to understand',
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(16),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                          ),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.spaceBetween,
+                            children: [
+                              IconButton.filledTonal(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _toggleListening(true),
+                                tooltip: _listening
+                                    ? 'Stop voice input'
+                                    : 'Dictate a response',
+                                icon: Icon(
+                                  _listening
+                                      ? Icons.stop_rounded
+                                      : Icons.mic_rounded,
+                                ),
+                              ),
+                              if (canAddPhoto)
+                                TextButton.icon(
+                                  onPressed: _busy ? null : _attach,
+                                  icon: const Icon(
+                                    Icons.add_photo_alternate_outlined,
+                                  ),
+                                  label: const Text('Add photo'),
+                                ),
+                              FilledButton.icon(
+                                onPressed: _busy || _text.text.trim().isEmpty
+                                    ? null
+                                    : () {
+                                        final answer = _text.text.trim();
+                                        Navigator.pop(sheetContext);
+                                        _act('turn', extra: {'text': answer});
+                                      },
+                                icon: const Icon(Icons.arrow_upward_rounded),
+                                label: const Text('Share turn'),
+                              ),
+                            ],
+                          ),
+                        ] else if (_turns.containsKey(phase))
+                          Text(
+                            'Listening while ${names[_turns[phase]!]} shares. Your microphone is muted until your turn.',
+                            style: const TextStyle(color: Color(0xFF764936)),
+                          ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Metherapy is a supportive AI conversation guide, not a licensed therapist or clinical care.',
+                          style: TextStyle(
+                            color: Color(0xFF80665D),
+                            fontSize: 12,
+                          ),
                         ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // Court chat and actions.
-          Positioned(
-            left: 10,
-            right: peopleWidth + 18,
-            bottom: 8,
-            height: panelHeight,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
-              decoration: BoxDecoration(
-                color: const Color(0xF21A1724),
-                border: Border.all(color: hudGold, width: 1.5),
-                borderRadius: BorderRadius.circular(14),
-                boxShadow: const [
-                  BoxShadow(color: Color(0x77000000), blurRadius: 10),
-                ],
-              ),
-              child: Column(
-                children: [
-                  Expanded(
-                    child: ListView(
-                      padding: EdgeInsets.zero,
-                      children: [
-                        for (final message in recentChat)
-                          Builder(
-                            builder: (context) {
-                              final senderIndex = people.indexOf(
-                                message['senderId'] as String? ?? '',
-                              );
-                              final speaker = senderIndex >= 0
-                                  ? names[senderIndex]
-                                  : 'Partner';
-                              final color = message['senderId'] ==
-                                      widget.store.uid
-                                  ? const Color(0xFFFF829B)
-                                  : const Color(0xFF7BC8F5);
-                              return _gameChatLine(
-                                speaker,
-                                message['text'] as String? ?? '',
-                                color,
-                              );
-                            },
-                          ),
-                        if (phase > 0)
-                          _gameChatLine(
-                            currentSpeaker,
-                            line.text,
-                            line.speaker == 2
-                                ? hudGold
-                                : line.speaker == 0
-                                ? const Color(0xFFFF829B)
-                                : const Color(0xFF7BC8F5),
-                          ),
                       ],
                     ),
                   ),
-                  if (!both)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Waiting for your partner to enter court.',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: .82),
-                          fontSize: 11,
-                        ),
-                      ),
-                    )
-                  else if ({9, 12, 16}.contains(phase))
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        onPressed: _busy ? null : _review,
-                        icon: const Icon(Icons.gavel_rounded, size: 16),
-                        label: Text(
-                          phase == 16
-                              ? 'Ask Muse Wonder to review the appeal'
-                              : 'Ask Muse Spark to review the case',
-                        ),
-                      ),
-                    )
-                  else if (phase == 13 || phase == 17)
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    _callDetailsRebuild = null;
+  }
+
+  Widget _sessionRoomView(
+    BuildContext context,
+    Map<String, dynamic> c, {
+    required int phase,
+    required int role,
+    required bool both,
+    required int seconds,
+    required bool myTurn,
+    required Map? ruling,
+  }) {
+    final names = List<String>.from(c['names'] as List);
+    final aiConsent = c['aiConsent'] as List? ?? const [];
+    final bothConsented = aiConsent.length == 2;
+    final myConsent = aiConsent.contains(widget.store.uid);
+    final aiReady =
+        bothConsented &&
+        c['openingResponseDone'] == true &&
+        c['facilitatorPending'] != true &&
+        c['lease'] == null &&
+        !_therapistSpeaking;
+    final line = hearingLine(c);
+    final activeSpeaker = !both
+        ? 2
+        : (_therapistSpeaking || c['facilitatorPending'] == true)
+        ? 2
+        : _turns.containsKey(phase)
+        ? _turns[phase]!
+        : (line.speaker < 2 ? line.speaker : 2);
+    final canSubmit =
+        both && aiReady && _turns.containsKey(phase) && myTurn && seconds > 0;
+    final canContinue =
+        both && aiReady && _turns.containsKey(phase) && myTurn && seconds == 0;
+    final canSpeak = canSubmit && !_busy;
+    final canAddPhoto =
+        phase == 0 || (both && phase <= 8 && myTurn && seconds > 0);
+    final timerActive = c['deadline'] != null && phase < 18;
+    final timeText = timerActive
+        ? (seconds ~/ 60).toString().padLeft(2, '0') +
+              ':' +
+              (seconds % 60).toString().padLeft(2, '0')
+        : '—';
+    final approved = (c['approved'] as List? ?? const []).contains(
+      widget.store.uid,
+    );
+    final topic = (c['topic'] as String? ?? '').trim();
+    final isMetaTurn = activeSpeaker == 2;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFA998),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          const _MetherapyBackdrop(),
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final orb = (constraints.maxWidth * .39)
+                    .clamp(118.0, 174.0)
+                    .toDouble();
+                final person = (constraints.maxWidth * .215)
+                    .clamp(76.0, 100.0)
+                    .toDouble();
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(22, 8, 22, 24),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 560),
+                      child: Column(
                         children: [
-                          FilledButton.tonal(
-                            onPressed: _busy || approved
-                                ? null
-                                : () => _act('accept'),
-                            child: Text(approved ? 'Accepted' : 'Accept'),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              IconButton(
+                                onPressed: _pauseMenu,
+                                tooltip: 'Leave session',
+                                icon: const Icon(
+                                  Icons.close_rounded,
+                                  size: 28,
+                                  color: Color(0xFF6E3929),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: .30),
+                                  border: Border.all(
+                                    color: Colors.white.withValues(alpha: .48),
+                                  ),
+                                  borderRadius: BorderRadius.circular(28),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text(
+                                      'Metherapy',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 17,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 7),
+                                    const Icon(
+                                      Icons.verified_rounded,
+                                      color: Color(0xFF20A9F4),
+                                      size: 22,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 7,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: .30),
+                                  borderRadius: BorderRadius.circular(24),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.timer_outlined,
+                                      size: 17,
+                                      color: Color(0xFF6E3929),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      timeText,
+                                      style: const TextStyle(
+                                        color: Color(0xFF6E3929),
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
-                          if (phase == 13 && role == 1) ...[
-                            const SizedBox(width: 6),
-                            OutlinedButton(
-                              onPressed: _busy ? null : () => _act('appeal'),
-                              child: const Text('Appeal'),
+                          const SizedBox(height: 12),
+                          if (topic.isNotEmpty)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: .37),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: .40),
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'TODAY’S TOPIC',
+                                    style: TextStyle(
+                                      color: Color(0xFF9C5B45),
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 10,
+                                      letterSpacing: 1,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    topic,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF603525),
+                                      fontSize: 15,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ],
-                          const SizedBox(width: 6),
-                          TextButton(
-                            onPressed: _busy ? null : () => _act('decline'),
-                            child: const Text('Decline'),
+                          const SizedBox(height: 12),
+                          _metherapyNameBubble(),
+                          const SizedBox(height: 9),
+                          _PulseAvatar(
+                            active: isMetaTurn,
+                            size: orb,
+                            blue: true,
+                            child: const Center(
+                              child: Text(
+                                'AI',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 38,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            (c['model'] as String?)?.contains('wonder') == true
+                                ? 'Meta AI · Muse Wonder'
+                                : 'Meta AI · Muse Spark',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: .90),
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 22),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              _partnerOrb(
+                                index: 0,
+                                role: role,
+                                names: names,
+                                activeSpeaker: activeSpeaker,
+                                muted:
+                                    activeSpeaker != 0 ||
+                                    (role == 0 && _liveCall.muted),
+                                diameter: person,
+                              ),
+                              _partnerOrb(
+                                index: 1,
+                                role: role,
+                                names: names,
+                                activeSpeaker: activeSpeaker,
+                                muted:
+                                    activeSpeaker != 1 ||
+                                    (role == 1 && _liveCall.muted),
+                                diameter: person,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 18),
+                          _liveCallPanel(both: both, phase: phase, role: role),
+                          if (both && !bothConsented)
+                            _metherapyConsentCard(hasConsented: myConsent)
+                          else if (both && c['facilitatorPending'] == true)
+                            _facilitatorStatusCard(c)
+                          else if (both && bothConsented)
+                            _therapistResponseCard(c),
+                          if (!both)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: Text(
+                                'Waiting for ' +
+                                    names[role == 0 ? 1 : 0] +
+                                    ' to join this session.',
+                                style: const TextStyle(
+                                  color: Color(0xFF764936),
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          if (ruling != null)
+                            Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(top: 12),
+                              padding: const EdgeInsets.all(15),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFF5E8),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'A possible shared next step',
+                                    style: TextStyle(
+                                      color: Color(0xFFB85842),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    ruling['proposedRemedy'] as String? ?? '',
+                                    style: const TextStyle(
+                                      color: Color(0xFF4B3329),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    ruling['reasoning'] as String? ?? '',
+                                    style: const TextStyle(
+                                      color: Color(0xFF63483C),
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'What may still be unclear: ' +
+                                        (ruling['uncertainties'] as String? ??
+                                            ''),
+                                    style: const TextStyle(
+                                      color: Color(0xFF80665D),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (canSubmit)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 14),
+                              child: TextField(
+                                controller: _text,
+                                enabled: canSpeak,
+                                minLines: 2,
+                                maxLines: 4,
+                                maxLength: phase == 0 ? 1000 : 2000,
+                                onChanged: (_) => setState(() {}),
+                                decoration: InputDecoration(
+                                  hintText: _listening
+                                      ? 'Listening… speak your turn'
+                                      : 'Write your turn, or use the mic',
+                                  counterText: '',
+                                  filled: true,
+                                  fillColor: Colors.white.withValues(
+                                    alpha: .78,
+                                  ),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(18),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 13,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          if (canAddPhoto && both)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: _busy ? null : _attach,
+                                  icon: const Icon(
+                                    Icons.add_photo_alternate_outlined,
+                                  ),
+                                  label: const Text(
+                                    'Add an optional photo for context',
+                                  ),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: const Color(0xFF8D4A37),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          if ((c['evidence'] as List? ?? const []).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: SizedBox(
+                                height: 74,
+                                child: ListView(
+                                  scrollDirection: Axis.horizontal,
+                                  children: [
+                                    for (final raw in c['evidence'] as List)
+                                      Builder(
+                                        builder: (context) {
+                                          final exhibit = raw as Map;
+                                          final id =
+                                              exhibit['photoId'] as String?;
+                                          final path = id == null
+                                              ? null
+                                              : _photos[id];
+                                          return Padding(
+                                            padding: const EdgeInsets.only(
+                                              right: 8,
+                                            ),
+                                            child: InkWell(
+                                              onTap: () =>
+                                                  _openEvidence(exhibit),
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                              child: ClipRRect(
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                                child: path == null
+                                                    ? const SizedBox(
+                                                        width: 74,
+                                                        height: 74,
+                                                        child: ColoredBox(
+                                                          color: Color(
+                                                            0xFFFFF3E8,
+                                                          ),
+                                                          child: Icon(
+                                                            Icons
+                                                                .image_outlined,
+                                                          ),
+                                                        ),
+                                                      )
+                                                    : photoImage(
+                                                        path,
+                                                        width: 74,
+                                                        height: 74,
+                                                        fit: BoxFit.cover,
+                                                      ),
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          const SizedBox(height: 16),
+                          if (phase == 13 || phase == 17)
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                FilledButton(
+                                  onPressed: _busy || approved
+                                      ? null
+                                      : () => _act('accept'),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: const Color(0xFFB25D46),
+                                  ),
+                                  child: Text(
+                                    approved
+                                        ? 'Plan saved · waiting'
+                                        : 'Try this next step',
+                                  ),
+                                ),
+                                if (phase == 13 && role == 1)
+                                  OutlinedButton(
+                                    onPressed: _busy
+                                        ? null
+                                        : () => _act('appeal'),
+                                    child: const Text('Ask to revisit it'),
+                                  ),
+                                TextButton(
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _act('decline'),
+                                  child: const Text('Not ready to agree'),
+                                ),
+                              ],
+                            )
+                          else if (phase == 18)
+                            Text(
+                              c['closedStatus'] == 'accepted'
+                                  ? 'You both chose this next step. This session has ended and can’t be re-entered.'
+                                  : 'This session has ended and can’t be re-entered.',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Color(0xFF764936)),
+                            )
+                          else if (canContinue)
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton(
+                                onPressed: _busy ? null : () => _act('turn'),
+                                child: const Text('Continue to the next turn'),
+                              ),
+                            )
+                          else if (both && _turns.containsKey(phase) && !myTurn)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Text(
+                                'Listening while ' + names[_turns[phase]!] + ' shares. Your mic is muted until your turn.',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Color(0xFF764936),
+                                  fontSize: 13,
+                                ),
+                              ),
+                            )
+                          else if (canSubmit)
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton(
+                                onPressed: _busy || _text.text.trim().isEmpty
+                                    ? null
+                                    : () => _act(
+                                        'turn',
+                                        extra: {'text': _text.text.trim()},
+                                      ),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFFB25D46),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                ),
+                                child: const Text('Share your turn'),
+                              ),
+                            ),
+                          if (both && _turns.containsKey(phase))
+                            Padding(
+                              padding: const EdgeInsets.only(top: 9),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  IconButton.filled(
+                                    onPressed: canSpeak
+                                        ? () => _toggleListening(canSpeak)
+                                        : null,
+                                    tooltip: _listening
+                                        ? 'Stop speaking'
+                                        : 'Speak your turn',
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: _listening
+                                          ? const Color(0xFFBD6049)
+                                          : Colors.white.withValues(alpha: .65),
+                                      foregroundColor: _listening
+                                          ? Colors.white
+                                          : const Color(0xFF754333),
+                                      disabledBackgroundColor: Colors.white
+                                          .withValues(alpha: .3),
+                                    ),
+                                    icon: Icon(
+                                      _listening
+                                          ? Icons.stop_rounded
+                                          : Icons.mic_rounded,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Text(
+                                      canSpeak
+                                          ? 'Your live call audio is shared with your partner; only submitted turn text goes to Metherapy.'
+                                          : 'Your call microphone is muted until your turn.',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: Color(0xFF764936),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (phase == 13 || phase == 17)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(
+                                'Suggested next step: ' +
+                                    (ruling?['proposedRemedy'] as String? ??
+                                        ''),
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Color(0xFF764936),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          if (_error != null)
+                            Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(top: 12),
+                              padding: const EdgeInsets.all(11),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFF7F1),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Text(
+                                _error!,
+                                style: const TextStyle(
+                                  color: Color(0xFF8E3427),
+                                ),
+                              ),
+                            ),
+                          if (_busy)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 12),
+                              child: LinearProgressIndicator(
+                                color: Color(0xFFB25D46),
+                                backgroundColor: Color(0x55FFFFFF),
+                              ),
+                            ),
+                          const SizedBox(height: 14),
+                          const Text(
+                            'Metherapy is a supportive AI conversation guide, not a licensed therapist. You can pause or leave at any time.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF7B5547),
+                              fontSize: 11,
+                              height: 1.35,
+                            ),
                           ),
                         ],
                       ),
-                    )
-                  else if (phase == 18)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        c['closedStatus'] == 'accepted'
-                            ? 'Both partners accepted · court adjourned.'
-                            : 'Closed without a shared agreement.',
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                    )
-                  else if (both && _turns.containsKey(phase) && !myTurn)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Waiting for ${names[_turns[phase]!]} to take their turn.',
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 11,
-                        ),
-                      ),
-                    )
-                  else if (canSubmit)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'YOUR TURN  ·  $timeText remaining',
-                        style: const TextStyle(
-                          color: hudGold,
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: .7,
-                        ),
-                      ),
                     ),
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        onPressed: canAddEvidence && !_busy ? _attach : null,
-                        tooltip: 'Add evidence',
-                        color: hudGold,
-                        icon: const Icon(
-                          Icons.add_photo_alternate_outlined,
-                          size: 20,
-                        ),
-                      ),
-                      Expanded(
-                        child: TextField(
-                          controller: _text,
-                          enabled: !_busy,
-                          minLines: 1,
-                          maxLines: 2,
-                          maxLength: 2000,
-                          onChanged: (_) => setState(() {}),
-                          onSubmitted: (_) => _sendCourtChat(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                          ),
-                          decoration: InputDecoration(
-                            counterText: '',
-                            hintText: 'Type a message…',
-                            hintStyle: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 12,
-                            ),
-                            filled: true,
-                            fillColor: const Color(0xFF101019),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        onPressed: _busy || _text.text.trim().isEmpty
-                            ? null
-                            : _sendCourtChat,
-                        tooltip: 'Send message',
-                        color: const Color(0xFF9DA8FF),
-                        icon: const Icon(Icons.send_rounded),
-                      ),
-                      if (canSubmit || canContinue)
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          onPressed: _busy
-                              ? null
-                              : canContinue
-                              ? () => _act('turn')
-                              : _text.text.trim().isEmpty
-                              ? null
-                              : () => _act(
-                                  'turn',
-                                  extra: {'text': _text.text.trim()},
-                                ),
-                          tooltip: canContinue
-                              ? 'Continue after the turn timer'
-                              : 'Submit this court turn',
-                          color: hudGold,
-                          icon: const Icon(Icons.gavel_rounded),
-                        ),
-                    ],
                   ),
-                ],
-              ),
+                );
+              },
             ),
           ),
-
-          if (_error != null)
-            Positioned(
-              top: 56,
-              left: 12,
-              child: SafeArea(
-                child: Material(
-                  color: const Color(0xF7FFF3E8),
-                  borderRadius: BorderRadius.circular(9),
-                  child: Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: Text(
-                      _error!,
-                      style: const TextStyle(
-                        color: Color(0xFF8E3427),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          if (_busy)
-            const Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: LinearProgressIndicator(),
-            ),
         ],
       ),
     );
@@ -1148,22 +2414,67 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final c = _case;
     if (c == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Couple Court')),
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(_error ?? 'Opening your shared hearing…'),
-              TextButton(onPressed: _refresh, child: const Text('Retry')),
-            ],
-          ),
+        backgroundColor: const Color(0xFFFFA998),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            const _MetherapyBackdrop(),
+            SafeArea(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const _PulseAvatar(
+                        active: true,
+                        size: 132,
+                        blue: true,
+                        child: Center(
+                          child: Text(
+                            'AI',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 34,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      const Text(
+                        'Opening Metherapy session…',
+                        style: TextStyle(
+                          color: Color(0xFF633322),
+                          fontSize: 18,
+                        ),
+                      ),
+                      if (_error != null) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Color(0xFF8E3427)),
+                        ),
+                        TextButton(
+                          onPressed: _refresh,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
-    final phase = c['phase'] as int,
-        role = (c['people'] as List).indexOf(widget.store.uid);
-    final both = (c['joined'] as List).length == 2,
-        joined = (c['joined'] as List).contains(widget.store.uid);
+    final phase = c['phase'] as int;
+    final people = List<String>.from(c['people'] as List);
+    final role = people.indexOf(widget.store.uid);
+    final joined = (c['joined'] as List).contains(widget.store.uid);
+    final both = (c['joined'] as List).length == 2;
     final deadline = c['deadline'] as num?;
     final seconds = deadline == null
         ? 0
@@ -1185,434 +2496,372 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         ruling: ruling,
       );
     }
+
+    final names = List<String>.from(c['names'] as List);
+    final topic = (c['topic'] as String? ?? '').trim();
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Courtroom setup'),
-        leading: widget.onLobby == null
-            ? null
-            : IconButton(
-                onPressed: widget.onLobby,
-                tooltip: 'Back to cases',
-                icon: const Icon(Icons.arrow_back),
-              ),
-        actions: [
-          IconButton(
-            onPressed: _busy ? null : _refresh,
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh hearing',
-          ),
-        ],
-      ),
+      backgroundColor: const Color(0xFFFFA998),
       body: Stack(
         fit: StackFit.expand,
         children: [
-          const ColoredBox(color: Color(0xFFFFE9DC)),
-          if (_busy)
-            const Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: LinearProgressIndicator(),
-            ),
-          if (widget.onLobby != null)
-            Positioned(
-              top: 8,
-              left: 8,
-              child: SafeArea(
-                child: IconButton.filledTonal(
-                  onPressed: widget.onLobby,
-                  tooltip: 'Leave courtroom',
-                  icon: const Icon(Icons.arrow_back_rounded),
-                ),
-              ),
-            ),
-          if (_error != null)
-            Positioned(
-              top: 8,
-              right: 8,
-              child: SafeArea(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 360),
-                  child: Material(
-                    color: const Color(0xF7FFF3E8),
-                    borderRadius: BorderRadius.circular(12),
-                    elevation: 6,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 10,
-                      ),
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Color(0xFF8E3427)),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          DraggableScrollableSheet(
-            initialChildSize: 1.0,
-            minChildSize: 1.0,
-            maxChildSize: 1.0,
-            snap: true,
-            builder: (context, scrollController) => Container(
-              decoration: const BoxDecoration(
-                color: Color(0xFFFDF1DB),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Color(0x55000000),
-                    blurRadius: 18,
-                    offset: Offset(0, -4),
-                  ),
-                ],
-              ),
-              child: SingleChildScrollView(
-                controller: scrollController,
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1100),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const SizedBox(height: 8),
-                if (widget.roomInvite != null)
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
+          const _MetherapyBackdrop(),
+          SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final orb = (constraints.maxWidth * .38)
+                    .clamp(118.0, 164.0)
+                    .toDouble();
+                final person = (constraints.maxWidth * .21)
+                    .clamp(74.0, 94.0)
+                    .toDouble();
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 560),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'Invite your partner',
-                            style: TextStyle(fontWeight: FontWeight.bold),
+                          Align(
+                            alignment: Alignment.topLeft,
+                            child: IconButton(
+                              onPressed: _pauseMenu,
+                              tooltip: 'Session options',
+                              icon: const Icon(
+                                Icons.arrow_back_rounded,
+                                color: Color(0xFF6E3929),
+                              ),
+                            ),
                           ),
                           const Text(
-                            'Private one-use link · expires 24 hours after creation. Each of you keeps your own browser session.',
+                            'A little space to hear each other.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF633322),
+                              fontSize: 25,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                          SelectableText(widget.roomInvite!),
-                          TextButton.icon(
-                            onPressed: () async {
-                              await Clipboard.setData(
-                                ClipboardData(text: widget.roomInvite!),
-                              );
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Invite link copied'),
+                          const SizedBox(height: 13),
+                          _metherapyNameBubble(),
+                          const SizedBox(height: 9),
+                          _PulseAvatar(
+                            active: true,
+                            size: orb,
+                            blue: true,
+                            child: const Center(
+                              child: Text(
+                                'AI',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 36,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            (c['model'] as String?)?.contains('wonder') == true
+                                ? 'Meta AI · Muse Wonder'
+                                : 'Meta AI · Muse Spark',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: .90),
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 17),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              _partnerOrb(
+                                index: 0,
+                                role: role,
+                                names: names,
+                                activeSpeaker: 2,
+                                muted: true,
+                                diameter: person,
+                              ),
+                              _partnerOrb(
+                                index: 1,
+                                role: role,
+                                names: names,
+                                activeSpeaker: 2,
+                                muted: true,
+                                diameter: person,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 22),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(18),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: .55),
+                              borderRadius: BorderRadius.circular(22),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'WHAT YOU WANT TO TALK ABOUT',
+                                  style: TextStyle(
+                                    color: Color(0xFF9C5B45),
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 10,
+                                    letterSpacing: 1,
                                   ),
-                                );
-                              }
-                            },
-                            icon: const Icon(Icons.copy),
-                            label: const Text('Copy invitation'),
+                                ),
+                                const SizedBox(height: 7),
+                                Text(
+                                  topic.isEmpty
+                                      ? 'Your shared topic will appear here.'
+                                      : topic,
+                                  style: const TextStyle(
+                                    color: Color(0xFF603525),
+                                    fontSize: 15,
+                                    height: 1.35,
+                                  ),
+                                ),
+                                const SizedBox(height: 7),
+                                const Text(
+                                  'This invitation topic is shared with the AI facilitator as session context.',
+                                  style: TextStyle(
+                                    color: Color(0xFF80665D),
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          if (widget.roomInvite != null)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(15),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: .44),
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                              child: Column(
+                                children: [
+                                  const Text(
+                                    'Invite your partner to this session',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF633322),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  SelectableText(
+                                    widget.roomInvite!,
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: () async {
+                                      await Clipboard.setData(
+                                        ClipboardData(text: widget.roomInvite!),
+                                      );
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                              const SnackBar(
+                                                content: Text(
+                                                  'Session invite copied',
+                                                ),
+                                              ),
+                                            );
+                                      }
+                                    },
+                                    icon: const Icon(Icons.copy_rounded),
+                                    label: const Text('Copy invite'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (!both && joined)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 10),
+                              child: Text(
+                                'Your partner has been invited. You can start when they join.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Color(0xFF704033)),
+                              ),
+                            ),
+                          if (!joined)
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: _busy ? null : () => _act('join'),
+                                icon: const Icon(
+                                  Icons.favorite_outline_rounded,
+                                ),
+                                label: const Text('Join Metherapy session'),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFFB25D46),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 15,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          if (_error != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: Text(
+                                _error!,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Color(0xFF8E3427),
+                                ),
+                              ),
+                            ),
+                          if (_busy)
+                            const LinearProgressIndicator(
+                              color: Color(0xFFB25D46),
+                            ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Metherapy offers supportive conversation prompts. It is not a licensed therapist or clinical care.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF7B5547),
+                              fontSize: 11,
+                              height: 1.35,
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                if (_photos[c['scenePhotoId']] != null)
-                  ExpansionTile(
-                    title: const Text('Our Muse Image courtroom artwork'),
-                    children: [
-                      photoImage(
-                        _photos[c['scenePhotoId']]!,
-                        fit: BoxFit.contain,
-                      ),
-                    ],
-                  ),
-                if (widget.store.roomSession != null) ...[
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      for (var i = 0; i < 2; i++)
-                        Expanded(
-                          child: Column(
-                            children: [
-                              if (_photos[(c['portraits'] as List? ??
-                                      [null, null])[i]] !=
-                                  null)
-                                ClipOval(
-                                  child: photoImage(
-                                    _photos[(c['portraits'] as List)[i]]!,
-                                    width: 56,
-                                    height: 56,
-                                    fit: BoxFit.cover,
-                                  ),
-                                )
-                              else
-                                const CircleAvatar(
-                                  radius: 28,
-                                  child: Icon(Icons.person_outline),
-                                ),
-                              Text(
-                                (c['names'] as List)[i] as String,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                  RoomChat(store: widget.store, initiallyExpanded: false),
-                  if (phase == 0)
-                    OutlinedButton.icon(
-                      onPressed: _busy ? null : _attach,
-                      icon: const Icon(Icons.add_photo_alternate_outlined),
-                      label: const Text(
-                        'Add evidence before the hearing · up to 2 each',
-                      ),
-                    ),
-                ],
-                const SizedBox(height: 18),
-                Text(
-                  c['topic'] as String,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  _titles[phase],
-                  style: const TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  'You are the ${role == 0 ? 'claimant' : 'respondent'}. Both browsers use the same hearing.',
-                ),
-                if (!both && phase == 0) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    (c['portraits'] as List? ?? [null, null])[role] == null
-                        ? 'Optional: add your own portrait before entering.'
-                        : 'Your portrait is ready for Muse Image.',
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _busy ? null : _portrait,
-                    icon: const Icon(Icons.face_outlined),
-                    label: const Text('Choose my portrait · consent required'),
-                  ),
-                  if ((c['portraits'] as List? ?? []).length == 2 &&
-                      (c['portraits'] as List).every((p) => p != null))
-                    FilledButton.tonal(
-                      onPressed: _busy ? null : _art,
-                      child: const Text('Generate our courtroom · Muse Image'),
-                    ),
-                  if (c['sceneModel'] != null)
-                    Text('Artwork: ${c['sceneModel']}'),
-                ],
-                if (!both) ...[
-                  const SizedBox(height: 14),
-                  Text(
-                    joined
-                        ? 'Waiting for your partner to enter this summons.'
-                        : 'Both partners must enter before the hearing starts.',
-                  ),
-                  FilledButton(
-                    onPressed: _busy || joined ? null : () => _act('join'),
-                    child: Text(
-                      joined ? 'You entered court' : 'Enter shared hearing',
-                    ),
-                  ),
-                ] else if (_turns.containsKey(phase)) ...[
-                  const SizedBox(height: 14),
-                  Text('$seconds seconds remaining · server deadline'),
-                  if (phase == 0)
-                    const Text(
-                      'What small practical action would you like as compensation? Both people can decline the final proposal.',
-                    ),
-                  if (phase == 4)
-                    Text('Question: ${(c['crossQuestions'] as List)[0]}'),
-                  if (phase == 6)
-                    Text('Question: ${(c['crossQuestions'] as List)[1]}'),
-                  if (phase == 10 || phase == 11)
-                    Text(
-                      'Judge asks: ${(c['judgeQuestions'] as List)[phase - 10]}',
-                    ),
-                  if (phase == 15) Text('Appeal grounds: ${c['appealReason']}'),
-                  if (myTurn && seconds > 0) ...[
-                    TextField(
-                      controller: _text,
-                      maxLines: 5,
-                      maxLength: phase == 0 ? 1000 : 2000,
-                      enabled: !_busy,
-                      decoration: const InputDecoration(labelText: 'Your turn'),
-                    ),
-                    if (phase >= 1 && phase <= 8)
-                      OutlinedButton.icon(
-                        onPressed: _busy ? null : _attach,
-                        icon: const Icon(Icons.add_photo_alternate_outlined),
-                        label: const Text('Add photo evidence · up to 2 each'),
-                      ),
-                    FilledButton(
-                      onPressed: _busy
-                          ? null
-                          : () => _act(
-                              'turn',
-                              extra: {'text': _text.text.trim()},
-                            ),
-                      child: const Text('Submit my turn'),
-                    ),
-                  ] else if (seconds == 0)
-                    FilledButton(
-                      onPressed: _busy ? null : () => _act('turn'),
-                      child: const Text('Continue after expired turn'),
-                    )
-                  else
-                    Text(
-                      'Waiting for ${(c['names'] as List)[_turns[phase]!]} to take their turn.',
-                    ),
-                ] else if ({9, 12, 16}.contains(phase)) ...[
-                  const SizedBox(height: 14),
-                  Text(
-                    phase == 16
-                        ? 'Muse Wonder reviews the prior ruling, appeal grounds and response.'
-                        : 'Muse Spark examines the full record and original evidence.',
-                  ),
-                  FilledButton(
-                    onPressed: _busy ? null : _review,
-                    child: Text(
-                      BackendAccess.instance.connected
-                          ? 'Request ${phase == 16 ? 'Wonder appeal review' : 'Spark review'}'
-                          : widget.store.roomSession != null
-                          ? 'Connect room AI access'
-                          : 'Connect private AI demo access',
-                    ),
-                  ),
-                ],
-                if (ruling != null) ...[
-                  const Divider(height: 30),
-                  Text('Model: ${c['model']}'),
-                  Text('Requested: ${ruling['requestedRemedy']}'),
-                  Text(
-                    'Proposed: ${ruling['proposedRemedy']}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                    ),
-                  ),
-                  Text(ruling['reasoning'] as String),
-                  Text('Limits: ${ruling['uncertainties']}'),
-                ],
-                if (phase == 13 || phase == 17) ...[
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed:
-                        _busy ||
-                            (c['approved'] as List).contains(widget.store.uid)
-                        ? null
-                        : () => _act('accept'),
-                    child: Text(
-                      (c['approved'] as List).contains(widget.store.uid)
-                          ? 'Accepted · waiting for partner'
-                          : 'Accept this proposal',
-                    ),
-                  ),
-                  if (phase == 13 && role == 1)
-                    OutlinedButton(
-                      onPressed: _busy ? null : () => _act('appeal'),
-                      child: const Text('Appeal once'),
-                    ),
-                  TextButton(
-                    onPressed: _busy ? null : () => _act('decline'),
-                    child: const Text('Decline · close unresolved'),
-                  ),
-                ],
-                if (phase == 18)
-                  Text(
-                    c['closedStatus'] == 'accepted'
-                        ? 'Both partners accepted this proposal.'
-                        : 'Closed without mutual acceptance.',
-                  ),
-                if (widget.store.roomSession != null)
-                  SelectableText(
-                    'Room ID: ${widget.store.couple?['id'] ?? ''}',
-                  ),
-                const Divider(height: 32),
-                const Text(
-                  'Evidence · original photos',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                for (final raw in c['evidence'] as List)
-                  Builder(
-                    builder: (context) {
-                      final e = raw as Map;
-                      final path = _photos[e['photoId']];
-                      return ListTile(
-                        leading: path == null
-                            ? const Icon(Icons.image)
-                            : photoImage(
-                                path,
-                                width: 48,
-                                height: 48,
-                                fit: BoxFit.cover,
-                              ),
-                        title: Text('${e['id']} · ${e['caption']}'),
-                        subtitle: const Text(
-                          'Tap to view original or request SAM object highlights',
-                        ),
-                        onTap: path == null
-                            ? null
-                            : () async {
-                                final judge = JudgeService();
-                                try {
-                                  await Navigator.push(
-                                    context,
-                                    MaterialPageRoute<void>(
-                                      builder: (_) => EvidenceHighlights(
-                                        path: path,
-                                        caption: e['caption'] as String,
-                                        judge: judge,
-                                      ),
-                                    ),
-                                  );
-                                } finally {
-                                  judge.close();
-                                }
-                              },
-                      );
-                    },
-                  ),
-                for (final review in c['evidenceReview'] as List? ?? [])
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text(
-                      '${review['id']}: ${review['observation']}\nLimit: ${review['limitation']}',
-                    ),
-                  ),
-                const Divider(height: 32),
-                const Text(
-                  'Shared record',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                for (final field in [
-                  'requestedRemedy',
-                  'statements',
-                  'crossQuestions',
-                  'crossAnswers',
-                  'rebuttals',
-                  'judgeQuestions',
-                  'judgeAnswers',
-                ])
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 5),
-                    child: Text(
-                      '$field: ${c[field] is List ? (c[field] as List).join(' · ') : c[field]}',
-                    ),
-                  ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
+                );
+              },
             ),
           ),
         ],
       ),
     );
   }
+}
+
+class _MetherapyBackdrop extends StatelessWidget {
+  const _MetherapyBackdrop();
+
+  @override
+  Widget build(BuildContext context) => Image.asset(
+    'assets/branding/dreamy_peach_gradient_waves.png',
+    fit: BoxFit.cover,
+    errorBuilder: (context, error, stackTrace) => const DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFFFC8AB), Color(0xFFFF9D96), Color(0xFFFFAF9D)],
+        ),
+      ),
+    ),
+  );
+}
+
+class _PulseAvatar extends StatefulWidget {
+  const _PulseAvatar({
+    required this.active,
+    required this.size,
+    required this.child,
+    required this.blue,
+  });
+
+  final bool active;
+  final double size;
+  final Widget child;
+  final bool blue;
+
+  @override
+  State<_PulseAvatar> createState() => _PulseAvatarState();
+}
+
+class _PulseAvatarState extends State<_PulseAvatar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 820),
+      value: 0,
+    );
+    if (widget.active) _pulse.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PulseAvatar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) {
+      _pulse.repeat(reverse: true);
+    } else if (!widget.active && oldWidget.active) {
+      _pulse.stop();
+      _pulse.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _pulse,
+    builder: (context, child) {
+      final scale = widget.active ? 1 + (_pulse.value * .055) : 1.0;
+      final blue = widget.blue;
+      final glow = widget.active ? (.18 + _pulse.value * .30) : .06;
+      return Transform.scale(
+        scale: scale,
+        child: Container(
+          width: widget.size,
+          height: widget.size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: blue
+                ? const RadialGradient(
+                    center: Alignment(-.35, -.4),
+                    radius: 1.05,
+                    colors: [
+                      Color(0xFFF8FFFF),
+                      Color(0xFF9DE3FF),
+                      Color(0xFF1597F2),
+                    ],
+                    stops: [0, .56, 1],
+                  )
+                : null,
+            color: blue ? null : Colors.white.withValues(alpha: .82),
+            border: Border.all(
+              color: blue
+                  ? Colors.white.withValues(alpha: .75)
+                  : widget.active
+                  ? const Color(0xFFFF855E)
+                  : Colors.white.withValues(alpha: .86),
+              width: widget.active ? 3.5 : 2.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color:
+                    (blue ? const Color(0xFF198FE8) : const Color(0xFFE97859))
+                        .withValues(alpha: glow),
+                blurRadius: widget.active ? 30 : 14,
+                spreadRadius: widget.active ? 3 : 0,
+              ),
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: child,
+        ),
+      );
+    },
+    child: widget.child,
+  );
 }

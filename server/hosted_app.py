@@ -159,7 +159,7 @@ def make_app(records=None, api_key=None, model=None, clock=None):
                 body = None if request.method == 'GET' else await read_json(request, 16000)
                 if body is not None and (not isinstance(body, dict)):
                     raise AccessError(400, 'Invalid hearing request.')
-                if body is not None and body.get('operation') in {'review', 'art'}:
+                if body is not None and body.get('operation') in {'review', 'art', 'opening', 'facilitate'}:
                     result = await run_in_threadpool(model_review, data, uid, case_id, body, app.state.meta_key,
                         app.state.meta_model, app.state.security, request.headers.get('x-demo-session', ''), request.headers.get('x-request-id', ''))
                 else:
@@ -180,6 +180,31 @@ def make_app(records=None, api_key=None, model=None, clock=None):
         except Exception:
             return reply(503, {'error': 'Could not sync your shared space. Please try again.'})
 
+    @app.get('/couple/court/{case_id}/call')
+    @app.post('/couple/court/{case_id}/call')
+    async def shared_call(request: Request, case_id: str):
+        try:
+            header = request.headers.get('authorization', '')
+            if not header.startswith('Bearer '):
+                raise AccessError(401, 'Join your Closer session first.')
+            data = couple_data()
+            uid = await run_in_threadpool(data.user, header[7:])
+            await run_in_threadpool(data.admit, uid)
+            from live_call import state as call_state, update as call_update
+            if request.method == 'GET':
+                try:
+                    after = int(request.query_params.get('after', '0'))
+                except ValueError:
+                    raise AccessError(400, 'Invalid call cursor.')
+                result = await run_in_threadpool(call_state, data, uid, case_id, after)
+            else:
+                body = await read_json(request, 16000)
+                result = await run_in_threadpool(call_update, data, uid, case_id, body)
+            return reply(200, result)
+        except AccessError as error:
+            return reply(error.status, {'error': error.message})
+        except Exception:
+            return reply(503, {'error': 'The voice call could not sync. Your written session is still available.'})
     @app.post('/judge')
     @app.post('/hearing')
     @app.post('/characters')

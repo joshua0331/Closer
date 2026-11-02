@@ -294,44 +294,79 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
           child: SizedBox(
             width: 1672,
             height: 941,
-            child: Stack(
-              clipBehavior: Clip.hardEdge,
-              children: [
-                Positioned.fill(
-                  child: Image.asset(
-                    'assets/court/2d/court_stage.png',
-                    fit: BoxFit.fill,
-                    filterQuality: FilterQuality.medium,
-                  ),
-                ),
-                _judgeRig(),
-                _partnerRig(
-                  bodyAsset: 'assets/court/2d/girl_body.png',
-                  leftArmAsset: 'assets/court/2d/girl_arm_left.png',
-                  rightArmAsset: 'assets/court/2d/girl_arm_right.png',
-                  left: 106,
-                  top: 215,
-                  width: 452,
-                  height: 468,
-                  visibleHeight: 259,
-                  voice: 0,
-                  leftShoulder: const Offset(484 / 1233, 445 / 1276),
-                  rightShoulder: const Offset(748 / 1233, 445 / 1276),
-                ),
-                _partnerRig(
-                  bodyAsset: 'assets/court/2d/boy_body.png',
-                  leftArmAsset: 'assets/court/2d/boy_arm_left.png',
-                  rightArmAsset: 'assets/court/2d/boy_arm_right.png',
-                  left: 1114,
-                  top: 215,
-                  width: 450,
-                  height: 468,
-                  visibleHeight: 259,
-                  voice: 1,
-                  leftShoulder: const Offset(420 / 1230, 432 / 1278),
-                  rightShoulder: const Offset(807 / 1230, 432 / 1278),
-                ),
-              ],
+            child: AnimatedBuilder(
+              animation: _motion,
+              builder: (context, _) {
+                final phase = _motion.value * math.pi * 2;
+                final speaker = _motionOn && _speaking ? _line.speaker : -1;
+                return Stack(
+                  fit: StackFit.expand,
+                  clipBehavior: Clip.hardEdge,
+                  children: [
+                    Image.asset(
+                      'assets/court/seated/courtroom.png',
+                      fit: BoxFit.fill,
+                      filterQuality: FilterQuality.medium,
+                    ),
+                    _handLayer(
+                      asset: 'assets/court/seated/girl_gesture_hand.png',
+                      pivot: const Offset(402, 485),
+                      speaker: speaker,
+                      currentSpeaker: 0,
+                      phase: phase,
+                    ),
+                    _handLayer(
+                      asset: 'assets/court/seated/girl_rest_hand.png',
+                      pivot: const Offset(258, 549),
+                      speaker: speaker,
+                      currentSpeaker: 0,
+                      phase: phase,
+                      amplitude: 1.2,
+                      angularAmplitude: .018,
+                    ),
+                    _handLayer(
+                      asset: 'assets/court/seated/boy_gesture_hand.png',
+                      pivot: const Offset(1277, 500),
+                      speaker: speaker,
+                      currentSpeaker: 1,
+                      phase: phase,
+                    ),
+                    _handLayer(
+                      asset: 'assets/court/seated/boy_rest_hand.png',
+                      pivot: const Offset(1477, 543),
+                      speaker: speaker,
+                      currentSpeaker: 1,
+                      phase: phase,
+                    ),
+                    _handLayer(
+                      asset: 'assets/court/seated/judge_gavel_hand.png',
+                      pivot: const Offset(670, 319),
+                      speaker: speaker,
+                      currentSpeaker: 2,
+                      phase: phase,
+                      amplitude: 3.2,
+                      angularAmplitude: .075,
+                    ),
+                    _handLayer(
+                      asset: 'assets/court/seated/judge_rest_hand.png',
+                      pivot: const Offset(896, 331),
+                      speaker: speaker,
+                      currentSpeaker: 2,
+                      phase: phase,
+                      amplitude: 1.2,
+                      angularAmplitude: .018,
+                    ),
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _CourtMouthPainter(
+                          phase: phase,
+                          activeSpeaker: speaker,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
         ),
@@ -339,123 +374,127 @@ class _AnimatedCourtroomState extends State<AnimatedCourtroom>
     );
   }
 
-  Widget _partnerRig({
-    required String bodyAsset,
-    required String leftArmAsset,
-    required String rightArmAsset,
-    required double left,
-    required double top,
-    required double width,
-    required double height,
-    required double visibleHeight,
-    required int voice,
-    required Offset leftShoulder,
-    required Offset rightShoulder,
+  Widget _handLayer({
+    required String asset,
+    required Offset pivot,
+    required int speaker,
+    required int currentSpeaker,
+    required double phase,
+    double amplitude = 3.0,
+    double angularAmplitude = .045,
   }) {
-    return Positioned(
-      left: left,
-      top: top,
-      width: width,
-      height: visibleHeight,
-      child: ClipRect(
-        child: OverflowBox(
-          alignment: Alignment.topCenter,
-          minWidth: width,
-          maxWidth: width,
-          minHeight: height,
-          maxHeight: height,
-          child: AnimatedBuilder(
-            animation: _motion,
-            builder: (context, _) {
-              final phase = _motion.value * math.pi * 2;
-              final talking = _motionOn && _speaking && _line.speaker == voice;
-              final wave = talking ? math.sin(phase * 7) * .16 : 0.0;
-              final bob = math.sin(phase + voice) * (talking ? 2.2 : .8);
-              return Transform.translate(
-                offset: Offset(0, bob),
-                child: SizedBox(
-                  width: width,
-                  height: height,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      _rotatingLimb(leftArmAsset, leftShoulder, .52 + wave),
-                      _rotatingLimb(rightArmAsset, rightShoulder, -.52 - wave),
-                      Image.asset(bodyAsset, fit: BoxFit.fill),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _rotatingLimb(String asset, Offset pivot, double angle) {
+    final talking = speaker == currentSpeaker;
+    final gesture = talking ? math.sin(phase * 8) : 0.0;
     return Positioned.fill(
-      child: Transform.rotate(
-        alignment: Alignment(pivot.dx * 2 - 1, pivot.dy * 2 - 1),
-        angle: angle,
-        child: Image.asset(asset, fit: BoxFit.fill),
-      ),
-    );
-  }
-
-  Widget _judgeRig() {
-    const width = 382.0;
-    const height = 406.0;
-    const visibleHeight = 278.0;
-    return Positioned(
-      left: 645,
-      top: 65,
-      width: width,
-      height: visibleHeight,
-      child: ClipRect(
-        child: OverflowBox(
-          alignment: Alignment.topCenter,
-          minWidth: width,
-          maxWidth: width,
-          minHeight: height,
-          maxHeight: height,
-          child: AnimatedBuilder(
-            animation: _motion,
-            builder: (context, _) {
-              final phase = _motion.value * math.pi * 2;
-              final talking = _motionOn && _speaking && _line.speaker == 2;
-              final swing = talking ? math.sin(phase * 8) * .22 : 0.0;
-              final bob = math.sin(phase + 1) * (talking ? 1.8 : .55);
-              return Transform.translate(
-                offset: Offset(0, bob),
-                child: SizedBox(
-                  width: width,
-                  height: height,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Positioned.fill(
-                        child: Image.asset(
-                          'assets/court/2d/judge_body.png',
-                          fit: BoxFit.fill,
-                        ),
-                      ),
-                      Transform.rotate(
-                        alignment: const Alignment(-.72, -.23),
-                        angle: swing,
-                        child: Image.asset(
-                          'assets/court/2d/judge_gavel_hand.png',
-                          fit: BoxFit.fill,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
+      child: Transform.translate(
+        offset: Offset(0, -gesture.abs() * amplitude),
+        child: Transform.rotate(
+          alignment: Alignment(pivot.dx / 1672 * 2 - 1, pivot.dy / 941 * 2 - 1),
+          angle: gesture * angularAmplitude,
+          child: Image.asset(asset, fit: BoxFit.fill),
         ),
       ),
     );
   }
+}
+
+class _CourtMouthPainter extends CustomPainter {
+  const _CourtMouthPainter({required this.phase, required this.activeSpeaker});
+
+  final double phase;
+  final int activeSpeaker;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.scale(size.width / 1672, size.height / 941);
+    _partnerMouth(
+      canvas,
+      const Rect.fromLTWH(293, 455, 29, 29),
+      const Color(0xFFFFBA96),
+      const Color(0xFFF38A6C),
+      0,
+    );
+    _partnerMouth(
+      canvas,
+      const Rect.fromLTWH(1349, 454, 35, 30),
+      const Color(0xFFFFC397),
+      const Color(0xFFF39475),
+      1,
+    );
+    if (activeSpeaker == 2) {
+      _mouth(
+        canvas,
+        const Rect.fromLTWH(840, 240, 31, 21),
+        const Color(0xFFFFB38A),
+        const Color(0xFFEE8467),
+        true,
+      );
+    }
+    canvas.restore();
+  }
+
+  void _partnerMouth(
+    Canvas canvas,
+    Rect rect,
+    Color top,
+    Color bottom,
+    int speaker,
+  ) {
+    _mouth(canvas, rect, top, bottom, activeSpeaker == speaker);
+  }
+
+  void _mouth(Canvas canvas, Rect rect, Color top, Color bottom, bool talking) {
+    final patch = Paint()
+      ..shader = LinearGradient(colors: [top, bottom]).createShader(rect);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(5)),
+      patch,
+    );
+    final flap = math.sin(phase * 28);
+    final isOpen = talking && flap > -.2;
+    if (isOpen) {
+      final openHeight = 7.0 + math.max(0, flap) * 9.0;
+      final mouth = Rect.fromCenter(
+        center: Offset(rect.center.dx, rect.center.dy + 1),
+        width: rect.width * .57,
+        height: openHeight,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(mouth, const Radius.circular(4)),
+        Paint()..color = const Color(0xFF351015),
+      );
+      final tongue = Rect.fromLTWH(
+        mouth.left + 2,
+        mouth.bottom - 5,
+        mouth.width - 4,
+        3,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(tongue, const Radius.circular(2)),
+        Paint()..color = const Color(0xFFEF6670),
+      );
+    } else {
+      final smile = Path()
+        ..moveTo(rect.left + rect.width * .2, rect.center.dy)
+        ..quadraticBezierTo(
+          rect.center.dx,
+          rect.center.dy + 5,
+          rect.right - rect.width * .18,
+          rect.center.dy - 1,
+        );
+      canvas.drawPath(
+        smile,
+        Paint()
+          ..color = const Color(0xFF642A2A)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.4
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CourtMouthPainter oldDelegate) =>
+      phase != oldDelegate.phase || activeSpeaker != oldDelegate.activeSpeaker;
 }

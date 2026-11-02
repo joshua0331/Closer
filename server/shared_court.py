@@ -1,5 +1,6 @@
 """Server-owned two-person hearing transitions and deadlines."""
 import base64
+import secrets
 import time
 from google.cloud import firestore
 from demo_security import AccessError
@@ -33,7 +34,10 @@ def initial(couple, message):
             'statements':['',''],'crossQuestions':['',''],'crossAnswers':['',''],'rebuttals':['',''],
             'judgeQuestions':['',''],'judgeAnswers':['',''],'evidence':[],
             'appealReason':'','appealResponse':'','ruling':None,'firstRuling':None,'model':None,'approved':[],
-            'version':0,'lease':None,'closedStatus':None,'portraits':[None,None],'scenePhotoId':None}
+            'version':0,'lease':None,'closedStatus':None,'portraits':[None,None],'scenePhotoId':None,
+            'aiConsent':[],'openingResponseDone':False,'openingTriggerBy':None,'facilitatorPending':False,
+            'facilitatorResponses':[],'lastTurnBy':None,'lastTurnPhase':None,'lastTurnText':'',
+            'lastTurnVersion':0,'facilitatorHandledVersion':0}
 
 
 def update(data, uid, case_id, body=None):
@@ -47,7 +51,7 @@ def update(data, uid, case_id, body=None):
         if state['phase']==18:
             raise AccessError(409,'This hearing is closed.')
         now=time.time()
-        if state.get('lease') and state['lease']['until']>now:
+        if op != 'end' and state.get('lease') and state['lease']['until']>now:
             raise AccessError(409,'The judge is reviewing. Please wait.')
         if op=='portrait':
             if state['phase']!=0 or len(state['joined'])==2:raise AccessError(409,'Set portraits before starting the hearing.')
@@ -60,6 +64,22 @@ def update(data, uid, case_id, body=None):
         elif op=='join':
             state['joined']=list(set(state['joined']+[uid]))
             if len(state['joined'])==2 and state['deadline'] is None:state['deadline']=now+120
+        elif op=='ai_consent':
+            if len(state.get('joined', [])) != 2:
+                raise AccessError(409,'Both partners must join before enabling Metherapy.')
+            if body.get('version')!=state['version']:
+                raise AccessError(409,'The session changed. Refresh before continuing.')
+            consents=list(state.get('aiConsent', []))
+            if uid not in consents:
+                consents.append(uid)
+            state['aiConsent']=consents
+            if len(set(consents))==2 and not state.get('openingResponseDone'):
+                state.update(facilitatorPending=True,openingTriggerBy=uid,deadline=None)
+        elif op=='end':
+            if uid not in state['people']:
+                raise AccessError(403,'Only a session participant can end this session.')
+            state.update(phase=18,closedStatus='ended',deadline=None,
+                         facilitatorPending=False,lease=None)
         else:
             if len(state['joined'])!=2 and not (op=='evidence' and state['phase']==0):
                 raise AccessError(409,'Wait for both partners to enter court.')
@@ -81,7 +101,12 @@ def update(data, uid, case_id, body=None):
                 if index is None:state[field]=value[:1000] if field=='requestedRemedy' else value
                 else:state[field][index]=value
                 state['phase']+=1
-                state['deadline']=now+120 if state['phase'] in TURNS else None
+                state.update(lastTurnBy=state['people'].index(uid),lastTurnPhase=phase,
+                             lastTurnText=value,lastTurnVersion=state['version']+1)
+                if len(set(state.get('aiConsent', [])))==2:
+                    state.update(facilitatorPending=True,deadline=None)
+                else:
+                    state['deadline']=now+120 if state['phase'] in TURNS else None
             elif op=='evidence':
                 if phase != 0 and (phase not in TURNS or phase>8 or uid!=state['people'][TURNS[phase][0]] or now>=state['deadline']):
                     raise AccessError(403,'Add exhibits during your own opening, cross-examination or rebuttal turn.')
@@ -115,71 +140,156 @@ def update(data, uid, case_id, body=None):
 
 
 def model_review(data, uid, case_id, body, key, spark_model, security, token, request_id):
-    root,ref,couple,message=ref_for(data,uid,case_id)
+    root, ref, couple, message = ref_for(data, uid, case_id)
+    operation = body.get('operation')
     @firestore.transactional
     def lock(tx):
-        state=ref.get(transaction=tx).to_dict()
-        art=body.get('operation')=='art'
-        if not state:raise AccessError(409,'Enter the hearing first.')
+        state = ref.get(transaction=tx).to_dict()
+        if not state:
+            raise AccessError(409, 'Enter the session first.')
+        art = operation == 'art'
         if art:
-            if state['phase']!=0 or len(state['joined'])==2 or not all(state.get('portraits',[])):raise AccessError(409,'Both people must add a consented portrait before entering court.')
-        elif state['phase'] not in AI_PHASES or len(state['joined'])!=2:raise AccessError(409,'This step is not ready for the judge.')
-        if body.get('version')!=state['version']:raise AccessError(409,'The case changed. Refresh first.')
-        if state.get('lease') and state['lease']['until']>time.time():raise AccessError(409,'The judge is already reviewing.')
-        tx.update(ref,{'lease':{'id':request_id,'until':time.time()+180}})
-        return state
-    state=lock(data.db.transaction())
-    reservation=None
+            if state['phase'] != 0 or len(state['joined']) == 2 or not all(state.get('portraits', [])):
+                raise AccessError(409, 'Both people must add a consented portrait before entering the session.')
+            action = 'art'
+        elif operation in {'opening', 'facilitate'}:
+            if len(set(state.get('aiConsent', []))) != 2:
+                raise AccessError(403, 'Both partners must agree before sharing session context with Metherapy.')
+            if len(state.get('joined', [])) != 2 or not state.get('facilitatorPending'):
+                raise AccessError(409, 'Metherapy is not ready to speak yet.')
+            if operation == 'opening':
+                if state.get('openingResponseDone'):
+                    raise AccessError(409, 'Metherapy has already welcomed you.')
+                action = 'opening'
+            else:
+                if state.get('lastTurnVersion', 0) <= state.get('facilitatorHandledVersion', 0):
+                    raise AccessError(409, 'There is no new turn for Metherapy to reflect on.')
+                if state['phase'] not in TURNS and state['phase'] not in AI_PHASES:
+                    raise AccessError(409, 'This session step is not ready for a reflection.')
+                action = AI_PHASES.get(state['phase'], 'reflection')
+        else:
+            if len(set(state.get('aiConsent', []))) != 2:
+                raise AccessError(403, 'Both partners must agree before sharing session context with Metherapy.')
+            if state['phase'] not in AI_PHASES or len(state.get('joined', [])) != 2:
+                raise AccessError(409, 'Metherapy is not ready to respond yet.')
+            action = AI_PHASES[state['phase']]
+        if body.get('version') != state['version']:
+            raise AccessError(409, 'The session changed. Refresh first.')
+        if state.get('lease') and state['lease']['until'] > time.time():
+            raise AccessError(409, 'Metherapy is already preparing a response.')
+        tx.update(ref, {'lease': {'id': request_id, 'until': time.time() + 180}})
+        return state, action
+
+    state, action = lock(data.db.transaction())
+    reservation = None
     try:
-        if body.get('operation')=='art':
+        if action == 'art':
             from muse_image import create_scene
             import secrets
-            reservation=security.reserve(token,'characters',request_id,case_id+':art:'+str(state['version']))
-            photos=[]
+            reservation = security.reserve(token, 'characters', request_id, case_id + ':art:' + str(state['version']))
+            photos = []
             for photo_id in state['portraits']:
-                raw=data.bucket.blob(f'{root.id}/{photo_id}').download_as_bytes()
-                if len(raw)>1000000:raise AccessError(400,'Portraits must be smaller than 1 MB.')
+                raw = data.bucket.blob(f'{root.id}/{photo_id}').download_as_bytes()
+                if len(raw) > 1000000:
+                    raise AccessError(400, 'Portraits must be smaller than 1 MB.')
                 photos.append(base64.b64encode(raw).decode())
-            answer=create_scene({'photos':photos},key)
-            photo_id=secrets.token_hex(16)
-            data.bucket.blob(f'{root.id}/{photo_id}').upload_from_string(base64.b64decode(answer['image_base64']),content_type='image/png')
-            root.collection('photos').document(photo_id).set({'owner':uid})
+            answer = create_scene({'photos': photos}, key)
+            photo_id = secrets.token_hex(16)
+            data.bucket.blob(f'{root.id}/{photo_id}').upload_from_string(
+                base64.b64decode(answer['image_base64']), content_type='image/png')
+            root.collection('photos').document(photo_id).set({'owner': uid})
+
             @firestore.transactional
             def save_art(tx):
-                latest=ref.get(transaction=tx).to_dict()
-                if latest.get('lease',{}).get('id')!=request_id:raise AccessError(409,'Scene request changed.')
-                latest.update(scenePhotoId=photo_id,sceneModel=answer['model'],sceneResponseId=answer.get('response_id'),lease=None,version=latest['version']+1)
-                tx.set(ref,latest)
+                latest = ref.get(transaction=tx).to_dict()
+                if latest.get('lease', {}).get('id') != request_id:
+                    raise AccessError(409, 'The scene request changed.')
+                latest.update(scenePhotoId=photo_id, sceneModel=answer['model'],
+                              sceneResponseId=answer.get('response_id'), lease=None,
+                              version=latest['version'] + 1)
+                tx.set(ref, latest)
                 return latest
             return save_art(data.db.transaction())
-        action=AI_PHASES[state['phase']]
-        reservation=security.reserve(token,'hearing',request_id,case_id+':'+str(state['version']))
-        fields=['topic','requestedRemedy','names','statements','crossQuestions','crossAnswers','rebuttals','judgeQuestions','judgeAnswers','appealReason','appealResponse']
-        case={k:state[k] for k in fields}
-        case['priorRuling']=state['ruling'] if action=='appeal' else None
-        case['evidence']=[]
-        for exhibit in state['evidence']:
-            raw=data.bucket.blob(f"{root.id}/{exhibit['photoId']}").download_as_bytes()
-            if len(raw)>1000000:raise AccessError(400,'Evidence must be smaller than 1 MB.')
-            case['evidence'].append({k:exhibit[k] for k in ['id','owner','caption']}|{'image_base64':base64.b64encode(raw).decode()})
-        answer=call_hearing({'action':action,'case':case},key,spark_model)
+
+        reservation = security.reserve(
+            token, 'hearing', request_id,
+            case_id + ':' + action + ':' + str(state['version']))
+        fields = [
+            'topic', 'requestedRemedy', 'names', 'statements', 'crossQuestions',
+            'crossAnswers', 'rebuttals', 'judgeQuestions', 'judgeAnswers',
+            'appealReason', 'appealResponse',
+        ]
+        case = {key: state.get(key, '') for key in fields}
+        case['latestTurn'] = {
+            'participant': state.get('lastTurnBy'),
+            'phase': state.get('lastTurnPhase'),
+            'text': state.get('lastTurnText', ''),
+        }
+        case['priorRuling'] = state.get('ruling') if action == 'appeal' else None
+        case['evidence'] = []
+        if action not in {'opening', 'reflection'}:
+            for exhibit in state.get('evidence', []):
+                raw = data.bucket.blob(f"{root.id}/{exhibit['photoId']}").download_as_bytes()
+                if len(raw) > 1000000:
+                    raise AccessError(400, 'Evidence must be smaller than 1 MB.')
+                case['evidence'].append(
+                    {key: exhibit[key] for key in ['id', 'owner', 'caption']} |
+                    {'image_base64': base64.b64encode(raw).decode()})
+        answer = call_hearing({'action': action, 'case': case}, key, spark_model)
+
         @firestore.transactional
         def finish(tx):
-            latest=ref.get(transaction=tx).to_dict()
-            if latest.get('lease',{}).get('id')!=request_id or latest['version']!=state['version']:raise AccessError(409,'Case review changed. Refresh.')
-            latest.update(phase=state['phase']+1,version=state['version']+1,lease=None,model=answer['model'],approved=[])
-            latest['evidenceReview']=answer['result']['evidenceReview']
-            if action=='questions':latest.update(judgeQuestions=answer['result']['questions'],deadline=time.time()+120)
+            latest = ref.get(transaction=tx).to_dict()
+            if (latest.get('lease', {}).get('id') != request_id or
+                    latest['version'] != state['version']):
+                raise AccessError(409, 'The session changed. Refresh and retry.')
+            now = time.time()
+            if action in {'opening', 'reflection'}:
+                responses = list(latest.get('facilitatorResponses', []))
+                responses.append({
+                    'id': secrets.token_hex(12),
+                    'message': answer['result']['message'],
+                    'sourcePhase': latest.get('lastTurnPhase'),
+                    'createdAt': now,
+                })
+                latest.update(
+                    version=state['version'] + 1,
+                    lease=None,
+                    model=answer['model'],
+                    facilitatorResponses=responses[-12:],
+                    facilitatorPending=False,
+                    facilitatorHandledVersion=latest.get('lastTurnVersion', 0),
+                )
+                if action == 'opening':
+                    latest['openingResponseDone'] = True
+                latest['deadline'] = now + 120 if latest['phase'] in TURNS else None
             else:
-                latest['ruling']=answer['result']
-                if action=='verdict':latest['firstRuling']=answer['result']
-            tx.set(ref,latest)
+                latest.update(
+                    phase=state['phase'] + 1,
+                    version=state['version'] + 1,
+                    lease=None,
+                    model=answer['model'],
+                    approved=[],
+                    facilitatorPending=False,
+                    facilitatorHandledVersion=latest.get('lastTurnVersion', 0),
+                )
+                latest['evidenceReview'] = answer['result']['evidenceReview']
+                if action == 'questions':
+                    latest.update(judgeQuestions=answer['result']['questions'], deadline=now + 120)
+                else:
+                    latest['ruling'] = answer['result']
+                    if action == 'verdict':
+                        latest['firstRuling'] = answer['result']
+            tx.set(ref, latest)
             return latest
+
         return finish(data.db.transaction())
     finally:
         @firestore.transactional
         def unlock(tx):
-            current=ref.get(transaction=tx).to_dict()
-            if current.get('lease') and current['lease']['id']==request_id:tx.update(ref,{'lease':None})
+            current = ref.get(transaction=tx).to_dict()
+            if current and current.get('lease') and current['lease']['id'] == request_id:
+                tx.update(ref, {'lease': None})
         unlock(data.db.transaction())
-        if reservation:security.finish(reservation)
+        if reservation:
+            security.finish(reservation)

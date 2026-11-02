@@ -21,17 +21,19 @@ class _CourtHomeState extends State<CourtHome> {
     final issue = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('File a case'),
+        title: const Text('Invite your partner to a session'),
         content: SizedBox(
           width: 440,
           child: TextField(
             controller: text,
             autofocus: true,
             maxLength: 1000,
+            minLines: 2,
             maxLines: 4,
             decoration: const InputDecoration(
-              labelText: 'What happened?',
-              hintText: 'Explain the disagreement. You can request compensation in court.',
+              labelText: 'Session topic',
+              hintText: 'What would you like to work through together?',
+              alignLabelWithHint: true,
             ),
           ),
         ),
@@ -46,7 +48,7 @@ class _CourtHomeState extends State<CourtHome> {
                 Navigator.pop(context, text.text.trim());
               }
             },
-            child: const Text('Send summons'),
+            child: const Text('Invite to session'),
           ),
         ],
       ),
@@ -65,8 +67,7 @@ class _CourtHomeState extends State<CourtHome> {
     } catch (_) {
       if (mounted) {
         setState(
-          () => _error =
-              'Could not file the case. Check your connection and retry.',
+          () => _error = 'Could not send the session invite. Check your connection and retry.',
         );
       }
     } finally {
@@ -83,7 +84,7 @@ class _CourtHomeState extends State<CourtHome> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('Couple Court'),
+      title: const Text('Metherapy'),
       actions: [
         TextButton.icon(
           onPressed: () => Navigator.push<void>(
@@ -117,60 +118,75 @@ class _CourtHomeState extends State<CourtHome> {
             child: ListView(
               padding: const EdgeInsets.all(24),
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: AspectRatio(
-                    aspectRatio: 1672 / 941,
-                    child: Image.asset(
-                      'assets/court/courtroom.png',
-                      fit: BoxFit.cover,
-                      filterQuality: FilterQuality.none,
+                Container(
+                  height: 210,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Color(0xFFFFC8AB),
+                        Color(0xFFFF9D96),
+                        Color(0xFFFFAF9D),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: const Center(
+                    child: Icon(
+                      Icons.auto_awesome_rounded,
+                      size: 96,
+                      color: Color(0xFF1597F2),
                     ),
                   ),
                 ),
                 const SizedBox(height: 24),
                 Text(
-                  'A fair turn for both of you.',
+                  'A calm space to hear each other.',
                   style: Theme.of(context).textTheme.headlineMedium,
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  '${widget.store.yourName} & ${widget.store.partnerName} · Your private courtroom',
+                  '${widget.store.yourName} & ${widget.store.partnerName} · Your private Metherapy session',
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'Share photo evidence, question each other, and let Muse Spark propose a ruling. Muse Wonder reviews appeals. Every outcome is voluntary; this is not legal advice.',
+                  'Take turns, share optional photos for context, and work toward a voluntary next step with a supportive AI facilitator. Metherapy is not a licensed therapist or a substitute for professional care.',
                 ),
                 const SizedBox(height: 20),
                 FilledButton.icon(
                   onPressed: _busy ? null : _newCase,
-                  icon: const Icon(Icons.gavel),
-                  label: Text(_busy ? 'Opening court…' : 'File a new case'),
+                  icon: const Icon(Icons.favorite_outline_rounded),
+                  label: Text(
+                    _busy ? 'Opening session…' : 'Invite partner to a session',
+                  ),
                 ),
                 if (_error != null) Text(_error!),
                 if (widget.store.storageError != null)
                   Text(widget.store.storageError!),
                 const SizedBox(height: 32),
                 Text(
-                  'Your cases',
+                  'Previous sessions',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 if (cases.isEmpty)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 24),
                     child: Text(
-                      'No cases yet. Your partner will see a summons here when you file one.',
+                      'No sessions yet. Your partner will see your invite in chat.',
                     ),
                   ),
                 for (final item in cases)
                   Card(
                     child: ListTile(
-                      leading: const Icon(Icons.gavel),
-                      title: Text(item['text'] as String? ?? 'Couple Court'),
+                      leading: const Icon(Icons.auto_awesome_rounded),
+                      title: Text(
+                        item['text'] as String? ?? 'Metherapy session',
+                      ),
                       subtitle: Text(
                         item['status'] == 'closed'
-                            ? 'Closed · View hearing'
-                            : 'Open · Enter hearing',
+                            ? 'Complete · View session'
+                            : 'Invite · Enter session',
                       ),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () => _open(item['id'] as String),
@@ -178,7 +194,7 @@ class _CourtHomeState extends State<CourtHome> {
                   ),
                 TextButton(
                   onPressed: () => widget.store.refresh(),
-                  child: const Text('Refresh cases'),
+                  child: const Text('Refresh sessions'),
                 ),
               ],
             ),

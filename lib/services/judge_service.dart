@@ -81,7 +81,7 @@ class JudgeService {
   ) async {
     if (!configured) {
       throw const JudgeException(
-        'The Meta judge is not connected. Practice mode does not examine evidence.',
+        'Metherapy Meta AI is not connected. Practice mode does not examine photos.',
       );
     }
     try {
@@ -101,7 +101,7 @@ class JudgeService {
       if (accessError != null) throw JudgeException(accessError);
       if (response.statusCode != 200 || response.bodyBytes.length > 300000) {
         throw const JudgeException(
-          'The judge could not complete this step. Your case is unchanged; please retry.',
+          'Metherapy could not complete this step. Your session is unchanged; please retry.',
         );
       }
       final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -136,11 +136,15 @@ class JudgeService {
         }
       } else {
         if (!{
+              'aligned',
+              'adapted',
+              'alternative',
+              'pause',
+              // Legacy responses remain readable if the hosted backend is older.
               'grant',
               'reduce',
               'increase',
               'deny',
-              'alternative',
             }.contains(result['decision']) ||
             result['requestedRemedy'] != docket['requestedRemedy']) {
           throw const FormatException();
@@ -157,11 +161,11 @@ class JudgeService {
       rethrow;
     } on TimeoutException {
       throw const JudgeException(
-        'The judge is taking too long. Please retry this step.',
+        'Metherapy is taking longer than expected. Please retry this step.',
       );
     } catch (_) {
       throw const JudgeException(
-        'Could not read the judge’s response. No ruling has been changed.',
+        'Could not read Metherapy’s response. Your session has not changed.',
       );
     }
   }
@@ -173,7 +177,7 @@ class JudgeService {
   }) async {
     if (!configured) {
       throw const JudgeException(
-        'The AI judge is not connected yet. You can still try the practice verdict.',
+        'Metherapy AI is not connected yet. You can still try a practice conversation.',
       );
     }
     try {
@@ -196,7 +200,7 @@ class JudgeService {
       if (accessError != null) throw JudgeException(accessError);
       if (response.statusCode != 200) {
         throw const JudgeException(
-          'The judge could not respond. Your statements are safe here; please try again.',
+          'Metherapy could not respond. Your shared notes are unchanged; please try again.',
         );
       }
       final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -213,11 +217,11 @@ class JudgeService {
       rethrow;
     } on TimeoutException {
       throw const JudgeException(
-        'The judge is taking longer than expected. Please try again.',
+        'Metherapy is taking longer than expected. Please try again.',
       );
     } catch (_) {
       throw const JudgeException(
-        'Could not reach the judge. Check the connection and try again.',
+        'Could not reach Metherapy. Check the connection and try again.',
       );
     }
   }

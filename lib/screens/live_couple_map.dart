@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/cloud_couple_store.dart';
 import '../services/photo_media.dart';
+import '../services/android_widget_sync.dart';
 import 'location_settings_page.dart';
 import 'couple_map.dart' show peach, ivory, slate;
 
@@ -169,6 +170,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
     await prefs.setBool(_preferenceKey, false);
     try {
       await widget.store.shareLocation(null);
+      await AndroidWidgetSync.clearDistance();
     } catch (_) {
       if (mounted)
         setState(
@@ -206,6 +208,12 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
       _error = null;
     });
     try {
+      if (defaultTargetPlatform == TargetPlatform.android &&
+          !await AndroidWidgetSync.requestLocationNotificationPermission()) {
+        throw Exception(
+          'Allow Closer notifications so Android can show when background location sharing is active.',
+        );
+      }
       if (!await Geolocator.isLocationServiceEnabled()) {
         throw Exception('Turn on device location services first.');
       }
@@ -278,10 +286,12 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
         distanceFilter: 50,
         intervalDuration: const Duration(seconds: 20),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: 'Closer location sharing is on',
-          notificationText:
-              'Your partner can see your location. Tap to open Closer.',
+          notificationTitle: 'Closer · Location sharing is on',
+          notificationText: 'Your partner can see your shared location. Open Closer to pause.',
+          notificationChannelName: 'Location sharing',
           enableWakeLock: true,
+          setOngoing: true,
+          color: Color(0xFFB85842),
         ),
       );
     }

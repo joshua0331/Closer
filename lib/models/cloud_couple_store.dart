@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/couple_store.dart';
 import '../services/backend_access.dart';
+import '../services/android_widget_sync.dart';
 
 class CloudCoupleStore extends CoupleStore {
   CloudCoupleStore(
@@ -70,7 +71,9 @@ class CloudCoupleStore extends CoupleStore {
               Duration(
                 seconds: body?['operation'] == 'art'
                     ? 220
-                    : body?['operation'] == 'review'
+                    : body?['operation'] == 'review' ||
+                          body?['operation'] == 'opening' ||
+                          body?['operation'] == 'facilitate'
                     ? 100
                     : 35,
               ),
@@ -103,6 +106,13 @@ class CloudCoupleStore extends CoupleStore {
     if (_closed) return;
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 8), (_) => refresh());
+    refresh();
+  }
+
+  void resumeBackgroundSharing() {
+    if (_closed) return;
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) => refresh());
     refresh();
   }
 
@@ -170,7 +180,10 @@ class CloudCoupleStore extends CoupleStore {
       }
     } finally {
       _refreshing = false;
-      if (!_closed) notifyListeners();
+      if (!_closed) {
+        unawaited(AndroidWidgetSync.sync(this));
+        notifyListeners();
+      }
     }
   }
 
@@ -206,6 +219,18 @@ class CloudCoupleStore extends CoupleStore {
     Map<String, dynamic>? body,
   }) async {
     final response = await request('couple/court/$id', body: body);
+    return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+  }
+
+  Future<Map<String, dynamic>> callSignal(
+    String id, {
+    int after = 0,
+    Map<String, dynamic>? body,
+  }) async {
+    final response = await request(
+      'couple/court/$id/call?after=$after',
+      body: body,
+    );
     return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
   }
 

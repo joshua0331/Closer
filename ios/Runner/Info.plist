@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Closer uses your microphone for live partner calls and spoken Metherapy turns.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Closer uses speech recognition to transcribe a spoken Metherapy turn before you share it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Closer shares your location with your paired partner only when you choose to share.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

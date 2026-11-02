@@ -6,7 +6,7 @@ class CoupleCourtBrand extends StatelessWidget {
   const CoupleCourtBrand({super.key});
   @override
   Widget build(BuildContext context) => Semantics(
-    label: 'Couple Court',
+    label: 'Metherapy',
     child: const ExcludeSemantics(
       child: SizedBox(
         height: 110,
@@ -23,7 +23,7 @@ class CoupleCourtBrand extends StatelessWidget {
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 child: Text(
-                  'Couple Court',
+                  'Metherapy',
                   style: TextStyle(
                     fontSize: 32,
                     fontWeight: FontWeight.w700,
@@ -90,4 +90,3 @@ class CourtMarkPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CourtMarkPainter oldDelegate) => false;
 }
-
