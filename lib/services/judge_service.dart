@@ -19,7 +19,9 @@ class JudgeService {
   final String endpoint;
   final String? _explicitToken;
   String get token => _explicitToken ?? defaultApiToken(endpoint);
-  bool get configured => endpoint.isNotEmpty && token.isNotEmpty;
+  bool get configured =>
+      endpoint.isNotEmpty &&
+      (token.isNotEmpty || hasAccountAccessFor(endpoint));
   void close() => _client.close();
 
   Future<List<Map<String, dynamic>>> segment(
@@ -27,7 +29,9 @@ class JudgeService {
     String prompt,
   ) async {
     if (!configured) {
-      throw const JudgeException('Connect AI demo access first.');
+      throw const JudgeException(
+        'Sign in and pair with your partner to use Meta AI.',
+      );
     }
     try {
       final response = await _client
@@ -35,7 +39,8 @@ class JudgeService {
             Uri.parse(endpoint).resolve('segment'),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $token',
+              'Authorization':
+                  'Bearer ${_explicitToken ?? await authenticatedApiToken(endpoint)}',
               'X-Request-ID': newRequestId(),
             },
             body: jsonEncode({'image_base64': image, 'prompt': prompt}),
@@ -91,7 +96,8 @@ class JudgeService {
             uri,
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $token',
+              'Authorization':
+                  'Bearer ${_explicitToken ?? await authenticatedApiToken(endpoint)}',
               'X-Request-ID': newRequestId(),
             },
             body: jsonEncode({'action': action, 'case': docket}),
@@ -186,7 +192,8 @@ class JudgeService {
             Uri.parse(endpoint),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $token',
+              'Authorization':
+                  'Bearer ${_explicitToken ?? await authenticatedApiToken(endpoint)}',
               'X-Request-ID': newRequestId(),
             },
             body: jsonEncode({

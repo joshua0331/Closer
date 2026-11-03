@@ -4,15 +4,18 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../localization/closer_localizations.dart';
 import '../services/photo_media.dart';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/couple_store.dart';
 import '../services/backend_access.dart';
 import '../services/android_widget_sync.dart';
+import '../services/notification_service.dart';
 
 class CloudCoupleStore extends CoupleStore {
   CloudCoupleStore(
@@ -33,7 +36,10 @@ class CloudCoupleStore extends CoupleStore {
   final bool courtOnly;
   final _client = http.Client();
   Timer? _timer;
+  StreamSubscription<String>? _pushTokenSubscription;
+  String? _registeredPushId;
   bool _refreshing = false, _closed = false;
+  int _pairingGeneration = 0;
   Map<String, dynamic>? couple;
   Map<String, dynamic> profile = {};
   String? avatarPath, partnerAvatarPath;
@@ -43,6 +49,7 @@ class CloudCoupleStore extends CoupleStore {
   @override
   bool get online => true;
   bool get paired => couple != null;
+  String get therapyLanguage => couple?['therapyLanguage'] as String? ?? 'en';
   String get uid => roomUid ?? user!.uid;
   Map<String, dynamic> get locations =>
       Map<String, dynamic>.from(couple?['locations'] as Map? ?? {});
@@ -95,7 +102,60 @@ class CloudCoupleStore extends CoupleStore {
 
   Future<void> start() async {
     await refresh();
+    unawaited(_syncNotificationTokenIfAllowed());
     _timer = Timer.periodic(const Duration(seconds: 8), (_) => refresh());
+  }
+
+  Future<void> _syncNotificationTokenIfAllowed() async {
+    try {
+      if (!await NotificationService.instance.isEnabled()) return;
+      final settings = await FirebaseMessaging.instance
+          .getNotificationSettings();
+      if (settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional) {
+        await registerPushToken();
+      }
+    } catch (_) {
+      // Push is optional; pairing, chat, maps and saved places remain usable.
+    }
+  }
+
+  void _listenForPushTokenRefresh() {
+    try {
+      _pushTokenSubscription ??= FirebaseMessaging.instance.onRegistered.listen(
+        (pushId) {
+          if (!_closed && paired && pushId != _registeredPushId) {
+            unawaited(
+              action({'action': 'push_registration', 'installationId': pushId})
+                  .then((value) {
+                    _registeredPushId = pushId;
+                    return value;
+                  })
+                  .catchError((_) => <String, dynamic>{}),
+            );
+          }
+        },
+      );
+    } catch (_) {
+      // Firebase Messaging is unavailable on some preview platforms.
+    }
+  }
+
+  Future<void> unregisterPushToken() async {
+    await action({'action': 'push_unregistration'});
+    _registeredPushId = null;
+    await _pushTokenSubscription?.cancel();
+    _pushTokenSubscription = null;
+  }
+
+  Future<void> registerPushToken() async {
+    final registeredId = FirebaseMessaging.instance.onRegistered.first;
+    _listenForPushTokenRefresh();
+    await FirebaseMessaging.instance.register();
+    final pushId = await registeredId.timeout(const Duration(seconds: 15));
+    if (pushId == _registeredPushId) return;
+    await action({'action': 'push_registration', 'installationId': pushId});
+    _registeredPushId = pushId;
   }
 
   void pause() {
@@ -119,18 +179,26 @@ class CloudCoupleStore extends CoupleStore {
   Future<void> refresh() async {
     if (_refreshing || _closed) return;
     _refreshing = true;
+    final generation = _pairingGeneration;
     try {
       final response = await request('couple/state');
       final data = Map<String, dynamic>.from(jsonDecode(response.body) as Map);
-      if (_closed) return;
+      if (_closed || generation != _pairingGeneration) return;
       profile = Map<String, dynamic>.from(data['profile'] as Map);
       couple = data['couple'] == null
           ? null
           : Map<String, dynamic>.from(data['couple'] as Map);
+      if (couple != null) {
+        await CloserLocaleController.saveLanguage(preferences, therapyLanguage);
+      } else {
+        CloserLocaleController.setLanguage(
+          preferences.getString(CloserLocaleController.preferenceKey),
+        );
+      }
       final avatarIds = Map<String, dynamic>.from(
         couple?['avatars'] as Map? ?? {},
       );
-      avatarPath = profile['avatarPhotoId'] is String
+      avatarPath = couple != null && profile['avatarPhotoId'] is String
           ? await photoPath(profile['avatarPhotoId'] as String)
           : null;
       final partnerPhoto = avatarIds[partnerUid];
@@ -165,7 +233,7 @@ class CloudCoupleStore extends CoupleStore {
         item['path'] = await photoPath(item['photoId'] as String);
         nextMemories.add(item);
       }
-      if (_closed) return;
+      if (_closed || generation != _pairingGeneration) return;
       messages
         ..clear()
         ..addAll(nextMessages);
@@ -241,6 +309,30 @@ class CloudCoupleStore extends CoupleStore {
     await refresh();
   }
 
+  Future<void> setTherapyLanguage(String language) async {
+    await action({'action': 'therapy_language', 'language': language});
+    await CloserLocaleController.saveLanguage(preferences, language);
+    await refresh();
+  }
+
+  Future<void> unpair() async {
+    await action({'action': 'unpair'});
+    _pairingGeneration++;
+    _registeredPushId = null;
+    await preferences.setBool('closer_location_share_$uid', false);
+    profile.remove('coupleId');
+    profile.remove('avatarPhotoId');
+    couple = null;
+    partnerName = '';
+    avatarPath = partnerAvatarPath = null;
+    relationshipStart = null;
+    messages.clear();
+    memories.clear();
+    storageError = null;
+    await AndroidWidgetSync.clearDistance();
+    notifyListeners();
+  }
+
   @override
   Future<void> save() async {
     await action({'action': 'profile', 'name': yourName});
@@ -265,6 +357,7 @@ class CloudCoupleStore extends CoupleStore {
     bool summons = false,
     String? photoPath,
     Map<String, dynamic>? replyTo,
+    String therapyLanguage = 'en',
   }) async {
     final id = newRequestId();
     final photoId = photoPath == null ? null : await upload(photoPath);
@@ -273,6 +366,7 @@ class CloudCoupleStore extends CoupleStore {
       'id': id,
       'text': text.trim(),
       'summons': summons,
+      if (summons) 'therapyLanguage': therapyLanguage,
       'photoId': photoId,
       'replyId': replyTo?['id'],
     });
@@ -318,6 +412,7 @@ class CloudCoupleStore extends CoupleStore {
   void dispose() {
     _closed = true;
     _timer?.cancel();
+    _pushTokenSubscription?.cancel();
     _client.close();
     super.dispose();
   }

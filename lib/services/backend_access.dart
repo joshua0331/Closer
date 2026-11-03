@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 /// Revocable demo access, kept in memory. Never stores the Meta API key or code.
@@ -169,6 +171,23 @@ String defaultJudgeUrl() {
   }
 }
 
+bool hasAccountAccessFor(String endpoint) {
+  final target = Uri.tryParse(endpoint);
+  final backend = Uri.tryParse(BackendAccess.instance.baseUrl);
+  return target != null &&
+      backend != null &&
+      target.origin == backend.origin &&
+      Firebase.apps.isNotEmpty &&
+      FirebaseAuth.instance.currentUser != null;
+}
+
+Future<String> authenticatedApiToken(String endpoint) async {
+  if (hasAccountAccessFor(endpoint)) {
+    return await FirebaseAuth.instance.currentUser!.getIdToken() ?? '';
+  }
+  return defaultApiToken(endpoint);
+}
+
 String defaultApiToken(String endpoint) {
   if (BackendAccess.instance.available) return BackendAccess.instance.token;
   final uri = Uri.tryParse(endpoint);
@@ -180,10 +199,9 @@ String defaultApiToken(String endpoint) {
 }
 
 String? demoErrorMessage(int status) => switch (status) {
-  401 || 403 => 'Your demo session is unavailable. Open AI demo access and enter your private demo code again.',
+  401 || 403 => 'Your AI access is unavailable. Sign in to Closer and retry.',
   409 => 'A request is already submitted or still running. Please wait before trying again.',
-  429 => 'The demo is busy or its usage allowance has been reached. Please wait or contact the demo owner.',
-  503 =>
-    'The AI demo is currently unavailable. Practice mode remains available.',
+  429 => 'Metherapy is busy or its service allowance has been reached. Please wait or contact support.',
+  503 => 'Meta AI is temporarily unavailable. Please retry later.',
   _ => null,
 };

@@ -5,8 +5,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../localization/closer_localizations.dart';
 import '../models/cloud_couple_store.dart';
 import 'couple_home.dart';
+import 'app_loading.dart';
 
 class AccountGate extends StatelessWidget {
   const AccountGate({super.key, required this.preferences});
@@ -16,7 +18,7 @@ class AccountGate extends StatelessWidget {
     stream: FirebaseAuth.instance.authStateChanges(),
     builder: (context, snapshot) {
       if (snapshot.connectionState == ConnectionState.waiting) {
-        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        return const CloserLoadingScreen();
       }
       if (snapshot.data == null) return const _SignIn();
       return _SharedGate(
@@ -45,23 +47,13 @@ class _SignInState extends State<_SignIn> {
     super.dispose();
   }
 
-  Future<void> _submit({bool reset = false}) async {
+  Future<void> _submit() async {
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      if (reset) {
-        await FirebaseAuth.instance.sendPasswordResetEmail(
-          email: _email.text.trim(),
-        );
-        if (mounted) {
-          setState(
-            () =>
-                _error = 'If that account exists, a reset email will be sent.',
-          );
-        }
-      } else if (_create) {
+      if (_create) {
         await FirebaseAuth.instance.createUserWithEmailAndPassword(
           email: _email.text.trim(),
           password: _password.text,
@@ -85,7 +77,7 @@ class _SignInState extends State<_SignIn> {
             'invalid-email' => 'Enter a valid email address.',
             'network-request-failed' =>
               'Check your internet connection and retry.',
-            _ => 'Could not sign in. Check your email and password, or reset your password.',
+            _ => 'Could not sign in. Check your email and password, then try again.',
           },
         );
       }
@@ -122,11 +114,11 @@ class _SignInState extends State<_SignIn> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Image.asset(
-                        'assets/branding/closer-logo.png',
+                        'assets/branding/closer-logo-transparent.png',
                         height: 76,
                         fit: BoxFit.contain,
-                        errorBuilder: (_, error, stack) => const Text(
-                          'closer',
+                        errorBuilder: (_, error, stack) => Text(
+                          tr('closer'),
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 42,
@@ -146,7 +138,7 @@ class _SignInState extends State<_SignIn> {
                             color: const Color(0xFFFFE8DE),
                             borderRadius: BorderRadius.circular(30),
                           ),
-                          child: const Row(
+                          child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Icon(
@@ -156,7 +148,7 @@ class _SignInState extends State<_SignIn> {
                               ),
                               SizedBox(width: 7),
                               Text(
-                                'YOUR SPACE, TOGETHER',
+                                tr('YOUR SPACE, TOGETHER'),
                                 style: TextStyle(
                                   fontSize: 10,
                                   letterSpacing: 1.2,
@@ -211,7 +203,7 @@ class _SignInState extends State<_SignIn> {
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Text(
-                              'EMAIL ADDRESS',
+                              tr('EMAIL ADDRESS'),
                               style: textTheme.labelSmall?.copyWith(
                                 color: muted,
                                 fontSize: 10,
@@ -232,7 +224,7 @@ class _SignInState extends State<_SignIn> {
                             ),
                             const SizedBox(height: 17),
                             Text(
-                              'PASSWORD',
+                              tr('PASSWORD'),
                               style: textTheme.labelSmall?.copyWith(
                                 color: muted,
                                 fontSize: 10,
@@ -248,13 +240,13 @@ class _SignInState extends State<_SignIn> {
                               style: const TextStyle(color: ink, fontSize: 15),
                               decoration:
                                   _fieldDecoration(
-                                    'At least 6 characters',
+                                    tr('At least 6 characters'),
                                     Icons.lock_outline_rounded,
                                   ).copyWith(
                                     suffixIcon: IconButton(
                                       tooltip: _showPassword
-                                          ? 'Hide password'
-                                          : 'Show password',
+                                          ? tr('Hide password')
+                                          : tr('Show password'),
                                       onPressed: () => setState(
                                         () => _showPassword = !_showPassword,
                                       ),
@@ -273,7 +265,12 @@ class _SignInState extends State<_SignIn> {
                               child: TextButton(
                                 onPressed: _busy
                                     ? null
-                                    : () => _submit(reset: true),
+                                    : () => Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) =>
+                                              const _PasswordResetPage(),
+                                        ),
+                                      ),
                                 style: TextButton.styleFrom(
                                   foregroundColor: terracotta,
                                   padding: const EdgeInsets.symmetric(
@@ -281,7 +278,7 @@ class _SignInState extends State<_SignIn> {
                                     vertical: 8,
                                   ),
                                 ),
-                                child: const Text('Forgot password?'),
+                                child: Text(tr('Forgot password?')),
                               ),
                             ),
                             if (_error != null)
@@ -362,7 +359,7 @@ class _SignInState extends State<_SignIn> {
                         ),
                       ),
                       const SizedBox(height: 18),
-                      const Row(
+                      Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(
@@ -372,7 +369,7 @@ class _SignInState extends State<_SignIn> {
                           ),
                           SizedBox(width: 7),
                           Text(
-                            'A little closer, every day',
+                            tr('A little closer, every day'),
                             style: TextStyle(
                               color: muted,
                               fontSize: 12,
@@ -383,7 +380,9 @@ class _SignInState extends State<_SignIn> {
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'By continuing, you agree to Closer’s Terms of Service and Privacy Policy.',
+                        tr(
+                          'By continuing, you agree to Closer’s Terms of Service and Privacy Policy.',
+                        ),
                         textAlign: TextAlign.center,
                         style: textTheme.labelSmall?.copyWith(
                           color: muted,
@@ -401,8 +400,8 @@ class _SignInState extends State<_SignIn> {
                               ),
                             ),
                             style: TextButton.styleFrom(foregroundColor: muted),
-                            child: const Text(
-                              'Terms',
+                            child: Text(
+                              tr('Terms'),
                               style: TextStyle(fontSize: 11),
                             ),
                           ),
@@ -413,8 +412,8 @@ class _SignInState extends State<_SignIn> {
                               ),
                             ),
                             style: TextButton.styleFrom(foregroundColor: muted),
-                            child: const Text(
-                              'Privacy',
+                            child: Text(
+                              tr('Privacy'),
                               style: TextStyle(fontSize: 11),
                             ),
                           ),
@@ -425,8 +424,8 @@ class _SignInState extends State<_SignIn> {
                               ),
                             ),
                             style: TextButton.styleFrom(foregroundColor: muted),
-                            child: const Text(
-                              'Help',
+                            child: Text(
+                              tr('Help'),
                               style: TextStyle(fontSize: 11),
                             ),
                           ),
@@ -463,6 +462,256 @@ class _SignInState extends State<_SignIn> {
           borderSide: const BorderSide(color: Color(0xFFB85842), width: 1.5),
         ),
       );
+}
+
+class _PasswordResetPage extends StatefulWidget {
+  const _PasswordResetPage();
+
+  @override
+  State<_PasswordResetPage> createState() => _PasswordResetPageState();
+}
+
+class _PasswordResetPageState extends State<_PasswordResetPage> {
+  final _email = TextEditingController();
+  bool _busy = false, _sent = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final email = _email.text.trim();
+    if (!email.contains('@') || email.startsWith('@') || email.endsWith('@')) {
+      setState(
+        () => _error = 'Enter the email address for your Closer account.',
+      );
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      if (mounted) setState(() => _sent = true);
+    } on FirebaseAuthException catch (error) {
+      if (mounted) {
+        setState(
+          () => _error = switch (error.code) {
+            'invalid-email' => 'Enter a valid email address.',
+            'network-request-failed' =>
+              'Check your internet connection and try again.',
+            _ => 'We couldn’t send the email right now. Check the address and try again.',
+          },
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _error =
+              'We couldn’t send the email right now. Please try again.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const ink = Color(0xFF392B27), muted = Color(0xFF806D65);
+    const terracotta = Color(0xFFB85842);
+    return Scaffold(
+      backgroundColor: const Color(0xFFFFF8F0),
+      appBar: AppBar(
+        title: Text(tr('Reset your password')),
+        foregroundColor: ink,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+      ),
+      extendBodyBehindAppBar: true,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Image.asset(
+              'assets/branding/dreamy_peach_gradient_waves.png',
+              fit: BoxFit.cover,
+            ),
+          ),
+          Positioned.fill(
+            child: ColoredBox(color: Colors.white.withValues(alpha: .12)),
+          ),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 440),
+                  child: Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: .95),
+                      borderRadius: BorderRadius.circular(28),
+                      border: Border.all(color: const Color(0xFFF2E3D9)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x1CB85842),
+                          blurRadius: 28,
+                          offset: Offset(0, 12),
+                        ),
+                      ],
+                    ),
+                    child: _sent
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const Icon(
+                                Icons.mark_email_read_outlined,
+                                color: terracotta,
+                                size: 54,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                tr('Check your inbox'),
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: ink,
+                                  fontSize: 25,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                'If an account exists for ${_email.text.trim()}, we’ve sent a Closer password reset link.',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: muted,
+                                  height: 1.5,
+                                ),
+                              ),
+                              const SizedBox(height: 22),
+                              OutlinedButton(
+                                onPressed: () => Navigator.pop(context),
+                                child: Text(tr('Back to sign in')),
+                              ),
+                            ],
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Image.asset(
+                                'assets/branding/closer-logo-transparent.png',
+                                height: 58,
+                                fit: BoxFit.contain,
+                              ),
+                              const SizedBox(height: 18),
+                              Text(
+                                tr('Let’s get you back in'),
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: ink,
+                                  fontSize: 25,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                tr(
+                                  'Enter your Closer account email and we’ll send you a secure reset link.',
+                                ),
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: muted, height: 1.5),
+                              ),
+                              const SizedBox(height: 24),
+                              Text(
+                                tr('EMAIL ADDRESS'),
+                                style: TextStyle(
+                                  color: muted,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 1.1,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _email,
+                                autofocus: true,
+                                keyboardType: TextInputType.emailAddress,
+                                autofillHints: const [AutofillHints.email],
+                                style: const TextStyle(
+                                  color: ink,
+                                  fontSize: 15,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: tr('you@example.com'),
+                                  prefixIcon: Icon(
+                                    Icons.alternate_email_rounded,
+                                    color: terracotta,
+                                  ),
+                                  filled: true,
+                                  fillColor: Color(0xFFFFFAF6),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.all(
+                                      Radius.circular(14),
+                                    ),
+                                  ),
+                                ),
+                                onSubmitted: (_) => _busy ? null : _send(),
+                              ),
+                              if (_error != null) ...[
+                                const SizedBox(height: 12),
+                                Text(
+                                  _error!,
+                                  style: const TextStyle(
+                                    color: Color(0xFFB23E36),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 18),
+                              SizedBox(
+                                height: 52,
+                                child: FilledButton(
+                                  onPressed: _busy ? null : _send,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: terracotta,
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                  ),
+                                  child: _busy
+                                      ? const SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : Text(
+                                          tr('Send reset link'),
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _SharedGate extends StatefulWidget {
@@ -542,17 +791,17 @@ class _SharedGateState extends State<_SharedGate> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     if (!_ready) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return const CloserLoadingScreen();
     }
     if (store.paired) return CoupleHome(store: store);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Closer · Pair with your partner'),
+        title: Text(tr('Closer · Pair with your partner')),
         actions: [
           IconButton(
             onPressed: () => FirebaseAuth.instance.signOut(),
             icon: const Icon(Icons.logout),
-            tooltip: 'Sign out',
+            tooltip: tr('Sign out'),
           ),
         ],
       ),
@@ -570,17 +819,21 @@ class _SharedGateState extends State<_SharedGate> with WidgetsBindingObserver {
                   color: Color(0xFFF18F77),
                 ),
                 const SizedBox(height: 20),
-                const Text(
-                  'Two accounts. One shared space.',
+                Text(
+                  tr('Two accounts. One shared space.'),
                   style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 12),
-                Text('Signed in as ${widget.user.email}'),
+                Text(
+                  trParams('Signed in as {email}', {
+                    'email': widget.user.email ?? '',
+                  }),
+                ),
                 const SizedBox(height: 16),
                 TextField(
                   controller: _name,
                   maxLength: 50,
-                  decoration: const InputDecoration(labelText: 'Your name'),
+                  decoration: InputDecoration(labelText: tr('Your name')),
                 ),
                 FilledButton(
                   onPressed: _busy
@@ -590,26 +843,28 @@ class _SharedGateState extends State<_SharedGate> with WidgetsBindingObserver {
                           await store.save();
                           _invite = await store.invite();
                         }),
-                  child: const Text('Create partner invitation'),
+                  child: Text(tr('Create partner invitation')),
                 ),
                 if (_invite != null) ...[
                   const SizedBox(height: 14),
-                  const Text(
-                    'Share this private one-time invitation with your partner. It expires in 24 hours.',
+                  Text(
+                    tr(
+                      'Share this private one-time invitation with your partner. It expires in 24 hours.',
+                    ),
                   ),
                   SelectableText(
                     _invite!,
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ],
-                const Padding(
+                Padding(
                   padding: EdgeInsets.symmetric(vertical: 20),
-                  child: Text('Or enter the invitation your partner sent:'),
+                  child: Text(tr('Or enter the invitation your partner sent:')),
                 ),
                 TextField(
                   controller: _code,
-                  decoration: const InputDecoration(
-                    labelText: 'Partner invitation',
+                  decoration: InputDecoration(
+                    labelText: tr('Partner invitation'),
                   ),
                 ),
                 FilledButton.tonal(
@@ -620,14 +875,14 @@ class _SharedGateState extends State<_SharedGate> with WidgetsBindingObserver {
                           await store.save();
                           await store.join(_code.text);
                         }),
-                  child: const Text('Pair with partner'),
+                  child: Text(tr('Pair with partner')),
                 ),
                 if (_busy) const LinearProgressIndicator(),
                 if (_error != null) Text(_error!),
                 if (store.storageError != null) Text(store.storageError!),
                 TextButton(
                   onPressed: () => store.refresh(),
-                  child: const Text('Check connection'),
+                  child: Text(tr('Check connection')),
                 ),
               ],
             ),

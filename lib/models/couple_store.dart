@@ -95,6 +95,7 @@ class CoupleStore extends ChangeNotifier {
     bool summons = false,
     String? photoPath,
     Map<String, dynamic>? replyTo,
+    String therapyLanguage = 'en',
   }) async {
     if (text.trim().isEmpty && photoPath == null) {
       throw ArgumentError('A message needs text or a photo.');
@@ -110,6 +111,7 @@ class CoupleStore extends ChangeNotifier {
           : 'text',
       'createdAt': DateTime.now().toIso8601String(),
       'status': summons ? 'open' : 'local',
+      if (summons) 'therapyLanguage': therapyLanguage,
       'sender': 'you',
       'hearted': false,
       'photoPath': ?photoPath,

@@ -4,6 +4,8 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Closer uses your microphone for live partner calls and spoken Metherapy turns.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Closer uses the camera so you can capture photos for shared Memories.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Closer uses speech recognition to transcribe a spoken Metherapy turn before you share it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

@@ -134,9 +134,7 @@ class _EvidenceHighlightsState extends State<EvidenceHighlights> {
             label: Text(_busy ? 'Finding objects…' : 'Highlight with SAM 3.1'),
           ),
           if (!widget.judge.configured)
-            const Text(
-              'Connect AI demo access to use SAM. No practice highlights are fabricated.',
-            ),
+            const Text('Sign in and pair with your partner to use SAM.'),
           if (_boxes.isNotEmpty)
             SwitchListTile(
               title: const Text('Show highlights'),

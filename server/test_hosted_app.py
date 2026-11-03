@@ -27,11 +27,11 @@ class HostedTests(unittest.TestCase):
                    'Access-Control-Request-Method': 'POST',
                    'Access-Control-Request-Headers': 'authorization,x-demo-session,x-request-id,content-type'}
         response = self.client.options('/couple/action', headers=headers)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers['access-control-allow-origin'], headers['Origin'])
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn('access-control-allow-origin', response.headers)
         response = self.client.get('/couple/state', headers={'Origin': headers['Origin']})
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.headers['access-control-allow-origin'], headers['Origin'])
+        self.assertNotIn('access-control-allow-origin', response.headers)
         headers['Origin'] = 'https://untrusted.example'
         self.assertEqual(self.client.options('/couple/action', headers=headers).status_code, 400)
 

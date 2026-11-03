@@ -67,12 +67,11 @@ def make_app(records=None, api_key=None, model=None, clock=None):
             raise RuntimeError('Initialize the persistent demo policy before starting.')
         app.state.security, app.state.meta_key, app.state.meta_model = security, key, selected
         yield
-    app = FastAPI(title='Closer demo backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(title='Closer backend', docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     # Browser requests still require Firebase identity and private AI access.
     app.add_middleware(CORSMiddleware,
-        allow_origins=['https://closer-court-ddf3a.web.app',
-                       'https://closer-court-ddf3a.firebaseapp.com'],
+        allow_origins=[],
         allow_origin_regex=r'https?://(localhost|127\.0\.0\.1)(:[0-9]+)?',
         allow_methods=['GET', 'POST'],
         allow_headers=['Authorization', 'Content-Type', 'X-Demo-Session', 'X-Request-ID'])
@@ -160,8 +159,13 @@ def make_app(records=None, api_key=None, model=None, clock=None):
                 if body is not None and (not isinstance(body, dict)):
                     raise AccessError(400, 'Invalid hearing request.')
                 if body is not None and body.get('operation') in {'review', 'art', 'opening', 'facilitate'}:
+                    security = app.state.security
+                    if not uid.startswith('room_'):
+                        from account_access import AccountAccess
+                        cid, _ = await run_in_threadpool(data.member, uid)
+                        security = AccountAccess(app.state.security.records, uid, cid)
                     result = await run_in_threadpool(model_review, data, uid, case_id, body, app.state.meta_key,
-                        app.state.meta_model, app.state.security, request.headers.get('x-demo-session', ''), request.headers.get('x-request-id', ''))
+                        app.state.meta_model, security, request.headers.get('x-demo-session', ''), request.headers.get('x-request-id', ''))
                 else:
                     result = await run_in_threadpool(update, data, uid, case_id, body)
                 result['serverNow'] = time.time()
@@ -211,12 +215,20 @@ def make_app(records=None, api_key=None, model=None, clock=None):
     @app.post('/segment')
     async def model_request(request: Request):
         reservation = None
+        security = app.state.security
         try:
             operation = request.url.path.rsplit('/', 1)[-1]
             header = request.headers.get('authorization', '')
-            if not header.startswith('Bearer ') or len(header) > 160:
-                raise AccessError(401, 'Enter your private demo code to connect.')
+            if not header.startswith('Bearer ') or len(header) > 8192:
+                raise AccessError(401, 'Sign in to Closer to use Meta AI.')
             token = header[7:]
+            if '.' in token:
+                from account_access import AccountAccess
+                data = couple_data()
+                uid = await run_in_threadpool(data.user, token)
+                await run_in_threadpool(data.admit, uid)
+                cid, _ = await run_in_threadpool(data.member, uid)
+                security = AccountAccess(app.state.security.records, uid, cid)
             request_id = request.headers.get('x-request-id', '')
             payload = await read_json(request, LIMITS[operation])
             try:
@@ -231,7 +243,7 @@ def make_app(records=None, api_key=None, model=None, clock=None):
             except (ValueError, KeyError, TypeError, UnicodeError):
                 raise AccessError(400, 'The case data or image references are invalid.')
             fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-            reservation = await run_in_threadpool(app.state.security.reserve, token, operation, request_id, fingerprint)
+            reservation = await run_in_threadpool(security.reserve, token, operation, request_id, fingerprint)
             # An operator can disable new calls immediately without redeploying.
             # Already-running provider requests may still complete.
             if operation == 'segment':
@@ -246,13 +258,13 @@ def make_app(records=None, api_key=None, model=None, clock=None):
         except AccessError as error:
             return reply(error.status, {'error': error.message})
         except (HTTPError, URLError, TimeoutError, ValueError, TypeError, KeyError, OSError):
-            return reply(502, {'error': 'Meta could not complete this request. You may retry within your demo allowance.'})
+            return reply(502, {'error': 'Meta could not complete this request. Please retry later.'})
         except Exception:
-            return reply(503, {'error': 'The demo cannot authorize this request right now.'})
+            return reply(503, {'error': 'Meta AI access is unavailable right now.'})
         finally:
             if reservation is not None:
                 try:
-                    await run_in_threadpool(app.state.security.finish, reservation)
+                    await run_in_threadpool(security.finish, reservation)
                 except Exception:
                     # Fail closed: persistent counters stay charged and the
                     # in-flight lease expires after five minutes.

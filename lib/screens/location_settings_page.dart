@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'couple_map.dart' show ivory, peach;
+import '../localization/closer_localizations.dart';
 import '../services/photo_media.dart';
 
 class LocationSettingsPage extends StatefulWidget {
@@ -12,17 +13,27 @@ class LocationSettingsPage extends StatefulWidget {
     required this.sharing,
     required this.busy,
     required this.onProfile,
+    required this.onNotifications,
     required this.onShareChanged,
     required this.avatarPath,
     required this.onAvatar,
+    required this.therapyLanguage,
+    required this.onTherapyLanguageChanged,
+    required this.canManageAccount,
+    required this.onSignOut,
+    required this.onUnpair,
   });
 
   final String yourName, partnerName;
   final bool sharing, busy;
-  final VoidCallback onProfile;
+  final VoidCallback onProfile, onNotifications;
   final Future<bool> Function(bool) onShareChanged;
   final String? avatarPath;
   final Future<String?> Function() onAvatar;
+  final String therapyLanguage;
+  final Future<void> Function(String) onTherapyLanguageChanged;
+  final bool canManageAccount;
+  final Future<void> Function() onSignOut, onUnpair;
 
   @override
   State<LocationSettingsPage> createState() => _LocationSettingsPageState();
@@ -30,14 +41,33 @@ class LocationSettingsPage extends StatefulWidget {
 
 class _LocationSettingsPageState extends State<LocationSettingsPage> {
   late bool _sharing;
-  bool _busy = false;
+  bool _busy = false, _languageBusy = false;
   String? _avatar;
+  late String _therapyLanguage;
+
+  static const _languages = <String, String>{
+    'en': 'English',
+    'id': 'Bahasa Indonesia',
+    'ms': 'Bahasa Melayu',
+    'hi': 'हिन्दी',
+    'fil': 'Filipino',
+  };
+  static const _shortLanguages = <String, String>{
+    'en': 'English',
+    'id': 'Indonesia',
+    'ms': 'Melayu',
+    'hi': 'हिन्दी',
+    'fil': 'Filipino',
+  };
 
   @override
   void initState() {
     super.initState();
     _sharing = widget.sharing;
     _avatar = widget.avatarPath;
+    _therapyLanguage = _languages.containsKey(widget.therapyLanguage)
+        ? widget.therapyLanguage
+        : 'en';
   }
 
   Future<void> _toggleSharing(bool enabled) async {
@@ -79,7 +109,7 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
                       color: Color(0xFF773A27),
                       size: 30,
                     ),
-                    tooltip: 'Close settings',
+                    tooltip: tr('Close settings'),
                   ),
                 ),
                 const SizedBox(height: 20),
@@ -174,21 +204,13 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
                   _row(
                     Icons.notifications_none_rounded,
                     'Notifications',
-                    onTap: () => _info(
-                      context,
-                      'Notifications',
-                      'Push notifications will be available when they are enabled for your account.',
-                    ),
+                    onTap: widget.onNotifications,
                   ),
                   _row(
                     Icons.language_rounded,
                     'Language',
-                    trailing: 'English',
-                    onTap: () => _info(
-                      context,
-                      'Language',
-                      'Closer currently uses English.',
-                    ),
+                    trailing: _shortLanguages[_therapyLanguage] ?? 'English',
+                    onTap: _chooseTherapyLanguage,
                   ),
                   _row(
                     Icons.shield_outlined,
@@ -217,6 +239,17 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
                     ),
                   ),
                 ]),
+                if (widget.canManageAccount) ...[
+                  const SizedBox(height: 18),
+                  _group([
+                    _row(Icons.logout_rounded, 'Sign out', onTap: _signOut),
+                    _row(
+                      Icons.link_off_rounded,
+                      'Unpair from partner',
+                      onTap: _confirmUnpair,
+                    ),
+                  ]),
+                ],
                 const SizedBox(height: 18),
                 _group([
                   Padding(
@@ -229,9 +262,9 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
                           size: 29,
                         ),
                         const SizedBox(width: 16),
-                        const Expanded(
+                        Expanded(
                           child: Text(
-                            'Share my location',
+                            tr('Share my location'),
                             style: TextStyle(
                               fontSize: 17,
                               color: Color(0xFF663621),
@@ -277,6 +310,137 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _chooseTherapyLanguage() async {
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: ivory,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: EdgeInsets.fromLTRB(22, 8, 22, 12),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  tr('App language'),
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF663621),
+                  ),
+                ),
+              ),
+            ),
+            for (final entry in _languages.entries)
+              ListTile(
+                title: Text(entry.value),
+                trailing: _therapyLanguage == entry.key
+                    ? const Icon(Icons.check_rounded, color: peach)
+                    : null,
+                onTap: () => Navigator.pop(context, entry.key),
+              ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+    if (selected == null || selected == _therapyLanguage) return;
+    final previous = _therapyLanguage;
+    setState(() {
+      _therapyLanguage = selected;
+      _languageBusy = true;
+    });
+    try {
+      await widget.onTherapyLanguageChanged(selected);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              trParams(
+                'Closer and new Metherapy sessions will use {language}.',
+                {'language': _languages[selected]!},
+              ),
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _therapyLanguage = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not save language: ${error.toString().replaceFirst('Exception: ', '')}',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _languageBusy = false);
+    }
+  }
+
+  Future<void> _signOut() async {
+    if (_languageBusy || _busy) return;
+    try {
+      await widget.onSignOut();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not sign out: ${error.toString().replaceFirst('Exception: ', '')}',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmUnpair() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(tr('Unpair from your partner?')),
+        content: Text(
+          tr(
+            'Both accounts will be unpaired and will lose access to this shared space, including its synced messages, memories, locations and sessions. The saved records are retained by Closer but will no longer be available to either account through this pairing.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(tr('Keep pairing')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(tr('Unpair')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _languageBusy = true);
+    try {
+      await widget.onUnpair();
+      if (mounted) Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not unpair: ${error.toString().replaceFirst('Exception: ', '')}',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _languageBusy = false);
+    }
   }
 
   Widget _wash(double size) => Container(
@@ -346,8 +510,8 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Location permissions',
+            Text(
+              tr('Location permissions'),
               style: TextStyle(
                 fontSize: 21,
                 fontWeight: FontWeight.bold,
@@ -355,8 +519,10 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
-              'Location sharing is optional and controlled by the switch in Settings. To keep sharing while the app is closed, set Closer’s phone permission to “Allow all the time.” You can change or remove that permission in your phone settings.',
+            Text(
+              tr(
+                'Location sharing is optional and controlled by the switch in Settings. To keep sharing while the app is closed, set Closer’s phone permission to “Allow all the time.” You can change or remove that permission in your phone settings.',
+              ),
             ),
             const SizedBox(height: 16),
             FilledButton.icon(
@@ -365,7 +531,7 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
                 Geolocator.openAppSettings();
               },
               icon: const Icon(Icons.open_in_new),
-              label: const Text('Open phone settings'),
+              label: Text(tr('Open phone settings')),
             ),
           ],
         ),
@@ -382,7 +548,7 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Done'),
+              child: Text(tr('Done')),
             ),
           ],
         ),

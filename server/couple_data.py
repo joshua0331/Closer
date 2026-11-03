@@ -1,6 +1,7 @@
 """Authenticated shared couple data. Separate collections; no client DB access."""
 import base64
 import hashlib
+import math
 import os
 import secrets
 import time
@@ -186,6 +187,51 @@ class CoupleData:
         return {'profile': profile, 'couple': {'id': cid, **couple, 'avatars': avatars},
                 'messages': list(reversed(records('messages'))), 'memories': records('memories')}
 
+    @staticmethod
+    def _meters_between(lat1, lon1, lat2, lon2):
+        radius = 6371000
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi, dlambda = math.radians(lat2-lat1), math.radians(lon2-lon1)
+        value = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+        return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1-value))
+
+    def _send_place_alerts(self, receiver, events):
+        """Send best-effort FCM alerts after a partner crosses a saved geofence."""
+        try:
+            import firebase_admin
+            from firebase_admin import messaging
+            try:
+                app = firebase_admin.get_app()
+            except ValueError:
+                app = firebase_admin.initialize_app(options={'projectId': self.project})
+            profile_ref = self.db.collection('closer_profiles').document(receiver)
+            fids = (profile_ref.get().to_dict() or {}).get('pushIds', [])
+            fids = [fid for fid in fids if isinstance(fid, str) and fid]
+            if not fids:
+                return
+            for event in events:
+                for start in range(0, len(fids), 500):
+                    batch = fids[start:start+500]
+                    message = messaging.MulticastMessage(
+                        fids=batch,
+                        notification=messaging.Notification(
+                            title=event.get('title', 'Closer · Place alert'),
+                            body=event['text'],
+                        ),
+                        data={'type': event.get('type', 'saved_place'), 'placeId': event.get('placeId', ''), 'messageId': event.get('messageId', '')},
+                        android=messaging.AndroidConfig(
+                            priority='high',
+                            notification=messaging.AndroidNotification(channel_id='closer_chat_messages' if event.get('type') == 'chat' else 'closer_place_alerts'),
+                        ),
+                        apns=messaging.APNSConfig(
+                            payload=messaging.APNSPayload(aps=messaging.Aps(sound='default')),
+                        ),
+                    )
+                    messaging.send_each_for_multicast(message, app=app)
+        except Exception as error:
+            # The location write remains successful if push delivery is unavailable.
+            print(f'Saved-place push delivery failed: {type(error).__name__}')
+
     def action(self, uid, body):
         if not isinstance(body, dict):
             raise AccessError(400, 'Invalid request.')
@@ -235,11 +281,38 @@ class CoupleData:
                 profiles = [profile_ref.get(transaction=tx).to_dict() or {}, owner_ref.get(transaction=tx).to_dict() or {}]
                 if any(p.get('coupleId') for p in profiles) or any(not p.get('name') for p in profiles):
                     raise AccessError(409, 'Both people need a name and must not already be paired.')
-                tx.set(couple_ref, {'members': [owner, uid], 'names': {owner: profiles[1]['name'], uid: profiles[0]['name']}, 'createdAt': now, 'locations': {}})
+                tx.set(couple_ref, {'members': [owner, uid], 'names': {owner: profiles[1]['name'], uid: profiles[0]['name']}, 'createdAt': now, 'locations': {}, 'therapyLanguage': 'en'})
                 tx.update(profile_ref, {'coupleId': couple_ref.id})
                 tx.update(owner_ref, {'coupleId': couple_ref.id})
                 tx.update(invite_ref, {'used': True})
             pair(self.db.transaction())
+        elif action == 'therapy_language':
+            language = clean(body.get('language'), 8)
+            if language not in {'en', 'id', 'ms', 'hi', 'fil'}:
+                raise AccessError(400, 'Choose a supported Metherapy language.')
+            cid, _ = self.member(uid)
+            self.db.collection('closer_couples').document(cid).update({'therapyLanguage': language, 'therapyLanguageUpdatedAt': now})
+        elif action == 'unpair':
+            @firestore.transactional
+            def detach(tx):
+                current_profile = profile_ref.get(transaction=tx).to_dict() or {}
+                cid = current_profile.get('coupleId')
+                if not cid:
+                    return False
+                couple_ref = self.db.collection('closer_couples').document(cid)
+                current_couple = couple_ref.get(transaction=tx).to_dict() or {}
+                members = current_couple.get('members', [])
+                if uid not in members:
+                    tx.update(profile_ref, {'coupleId': firestore.DELETE_FIELD, 'avatarPhotoId': firestore.DELETE_FIELD})
+                    return True
+                refs = [self.db.collection('closer_profiles').document(member) for member in members]
+                snapshots = [ref.get(transaction=tx).to_dict() or {} for ref in refs]
+                for ref, snapshot in zip(refs, snapshots):
+                    if snapshot.get('coupleId') == cid:
+                        tx.update(ref, {'coupleId': firestore.DELETE_FIELD, 'avatarPhotoId': firestore.DELETE_FIELD})
+                tx.update(couple_ref, {'members': [], 'locations': {}, 'savedPlaces': [], 'unpairedAt': now})
+                return True
+            return {'unpaired': detach(self.db.transaction())}
         else:
             cid, couple = self.member(uid)
             root = self.db.collection('closer_couples').document(cid)
@@ -263,13 +336,77 @@ class CoupleData:
                 item = {'text': text, 'createdAt': now, 'senderId': uid, 'photoId': photo,
                         'kind': 'photo' if photo else 'text', 'hearts': []}
                 if action == 'message' and body.get('summons') is True:
-                    item.update(kind='court', status='open')
+                    language = body.get('therapyLanguage', 'en')
+                    if language not in {'en', 'id', 'ms', 'hi', 'fil'}:
+                        raise AccessError(400, 'Choose a supported Metherapy language.')
+                    item.update(kind='court', status='open', therapyLanguage=language)
                 reply_id = body.get('replyId')
                 if reply_id and action == 'message':
                     previous = root.collection('messages').document(clean(reply_id,80)).get().to_dict()
                     if previous:
                         item['replyTo'] = {'id': reply_id, 'text': previous['text'], 'kind': previous['kind']}
                 ref.create(item)
+                if action == 'message':
+                    receiver = next((member for member in couple.get('members', []) if member != uid), None)
+                    if receiver:
+                        sender = (couple.get('names') or {}).get(uid, 'Your partner')
+                        preview = 'Invited you to a Metherapy session' if item['kind'] == 'court' else ('Sent a photo' if photo else text[:160])
+                        self._send_place_alerts(receiver, [{'title': f'Closer · {sender}', 'text': preview,
+                            'type': 'chat', 'messageId': item_id}])
+            elif action == 'push_unregistration':
+                profile_ref.set({'pushIds': []}, merge=True)
+            elif action == 'push_registration':
+                fid = clean(body.get('installationId'), 4096)
+                if len(fid) < 16 or any(char.isspace() for char in fid):
+                    raise AccessError(400, 'Invalid notification registration.')
+                profile_ref.set({'pushIds': [fid]}, merge=True)
+            elif action == 'saved_place_save':
+                raw_place = body.get('place')
+                if not isinstance(raw_place, dict):
+                    raise AccessError(400, 'Invalid saved place.')
+                place_id = clean(raw_place.get('id'), 80)
+                if not re.fullmatch(r'[A-Za-z0-9_-]{8,80}', place_id):
+                    raise AccessError(400, 'Invalid saved place.')
+                name = clean(raw_place.get('name'), 50)
+                lat, lon = raw_place.get('lat'), raw_place.get('lon')
+                radius = raw_place.get('radiusMeters')
+                if type(lat) not in (int, float) or type(lon) not in (int, float) or not math.isfinite(lat) or not math.isfinite(lon) or not -90 <= lat <= 90 or not -180 <= lon <= 180:
+                    raise AccessError(400, 'Choose a valid place on the map.')
+                if type(radius) is not int or not 50 <= radius <= 5000:
+                    raise AccessError(400, 'Choose a place alert radius between 50 and 5,000 metres.')
+                notify_arrival = raw_place.get('notifyArrival') is True
+                notify_departure = raw_place.get('notifyDeparture') is True
+                enabled = raw_place.get('enabled') is True
+                if not notify_arrival and not notify_departure:
+                    raise AccessError(400, 'Choose an arrival alert, a departure alert, or both.')
+                place_ref = root
+                @firestore.transactional
+                def save_place(tx):
+                    current = place_ref.get(transaction=tx).to_dict() or {}
+                    places = current.get('savedPlaces', [])
+                    previous = next((p for p in places if p.get('id') == place_id), None)
+                    record = {
+                        'id': place_id, 'name': name, 'lat': lat, 'lon': lon,
+                        'radiusMeters': radius, 'notifyArrival': notify_arrival,
+                        'notifyDeparture': notify_departure, 'enabled': enabled,
+                        'createdBy': previous.get('createdBy', uid) if previous else uid,
+                        'updatedAt': now,
+                    }
+                    updated = [p for p in places if p.get('id') != place_id]
+                    updated.append(record)
+                    if len(updated) > 100:
+                        raise AccessError(400, 'This couple already has 100 saved places.')
+                    tx.set(place_ref, {'savedPlaces': updated}, merge=True)
+                save_place(self.db.transaction())
+            elif action == 'saved_place_delete':
+                place_id = clean(body.get('id'), 80)
+                place_ref = root
+                @firestore.transactional
+                def delete_place(tx):
+                    current = place_ref.get(transaction=tx).to_dict() or {}
+                    places = current.get('savedPlaces', [])
+                    tx.set(place_ref, {'savedPlaces': [p for p in places if p.get('id') != place_id]}, merge=True)
+                delete_place(self.db.transaction())
             elif action == 'heart':
                 ref = root.collection('messages').document(clean(body.get('id'),80))
                 if not ref.get().exists:
@@ -285,9 +422,43 @@ class CoupleData:
                 else:
                     point = body['location']
                     lat, lon = point.get('lat'), point.get('lon')
-                    if type(lat) not in (int,float) or type(lon) not in (int,float) or not -90 <= lat <= 90 or not -180 <= lon <= 180:
+                    if type(lat) not in (int,float) or type(lon) not in (int,float) or not math.isfinite(lat) or not math.isfinite(lon) or not -90 <= lat <= 90 or not -180 <= lon <= 180:
                         raise AccessError(400, 'Invalid location.')
-                    root.update({f'locations.{uid}': {'lat': lat, 'lon': lon, 'updatedAt': now}})
+                    speed = point.get('speedMps')
+                    accuracy = point.get('speedAccuracyMps')
+                    if type(speed) not in (int, float) or not math.isfinite(speed) or not 0 <= speed <= 100:
+                        speed = None
+                    if type(accuracy) not in (int, float) or not math.isfinite(accuracy) or accuracy < 0:
+                        accuracy = None
+                    @firestore.transactional
+                    def update_location(tx):
+                        current = root.get(transaction=tx).to_dict() or {}
+                        old = (current.get('locations') or {}).get(uid)
+                        events = []
+                        if isinstance(old, dict) and type(old.get('lat')) in (int, float) and type(old.get('lon')) in (int, float):
+                            for place in current.get('savedPlaces', []):
+                                if not place.get('enabled'):
+                                    continue
+                                distance_before = self._meters_between(old['lat'], old['lon'], place['lat'], place['lon'])
+                                distance_after = self._meters_between(lat, lon, place['lat'], place['lon'])
+                                radius = place['radiusMeters']
+                                was_inside, is_inside = distance_before <= radius, distance_after <= radius
+                                if was_inside == is_inside:
+                                    continue
+                                if is_inside and place.get('notifyArrival'):
+                                    event_type = 'arrived at'
+                                elif was_inside and place.get('notifyDeparture'):
+                                    event_type = 'left'
+                                else:
+                                    continue
+                                actor = (current.get('names') or {}).get(uid, 'Your partner')
+                                events.append({'placeId': place['id'], 'text': f'{actor} {event_type} {place["name"]}.'})
+                        tx.update(root, {f'locations.{uid}': {'lat': lat, 'lon': lon, 'speedMps': speed, 'speedAccuracyMps': accuracy, 'updatedAt': now}})
+                        return current, events
+                    current, events = update_location(self.db.transaction())
+                    receiver = next((member_id for member_id in current.get('members', []) if member_id != uid), None)
+                    if receiver and events:
+                        self._send_place_alerts(receiver, events)
             else:
                 raise AccessError(400, 'Unknown action.')
         return self.state(uid)

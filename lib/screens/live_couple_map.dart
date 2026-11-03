@@ -2,17 +2,21 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gm;
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../localization/closer_localizations.dart';
 import '../models/cloud_couple_store.dart';
 import '../services/photo_media.dart';
 import '../services/android_widget_sync.dart';
+import '../services/notification_service.dart';
 import 'location_settings_page.dart';
 import 'couple_map.dart' show peach, ivory, slate;
+import 'saved_places_page.dart';
 
 class LiveCoupleMap extends StatefulWidget {
   const LiveCoupleMap({
@@ -21,9 +25,10 @@ class LiveCoupleMap extends StatefulWidget {
     required this.onProfile,
     required this.onDate,
     required this.onAvatar,
+    required this.onNotifications,
   });
   final CloudCoupleStore store;
-  final VoidCallback onProfile, onDate;
+  final VoidCallback onProfile, onDate, onNotifications;
   final Future<String?> Function() onAvatar;
   @override
   State<LiveCoupleMap> createState() => _LiveCoupleMapState();
@@ -37,6 +42,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
   String? _error;
   DateTime? _lastSent;
   Set<gm.Marker> _markers = {};
+  int _markerGeneration = 0;
 
   @override
   void initState() {
@@ -67,9 +73,12 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
     String? path,
     String name,
     bool self,
+    double? speedKph,
   ) async {
     final recorder = ui.PictureRecorder();
     final canvas = ui.Canvas(recorder);
+    canvas.save();
+    if (speedKph != null) canvas.translate(22, 0);
     final tint = ui.Paint()
       ..color = self ? const Color(0xFFF18F77) : const Color(0xFF78AFA5);
     canvas.drawCircle(const ui.Offset(48, 48), 47, tint);
@@ -108,14 +117,68 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
         ..layout(const ui.ParagraphConstraints(width: 96));
       canvas.drawParagraph(text, const ui.Offset(0, 20));
     }
-    final image = await recorder.endRecording().toImage(96, 96);
+    canvas.restore();
+    if (speedKph != null) {
+      canvas.drawRRect(
+        ui.RRect.fromRectAndRadius(
+          const ui.Rect.fromLTWH(0, 94, 140, 36),
+          const ui.Radius.circular(18),
+        ),
+        ui.Paint()..color = const Color(0xFFFFF4EE),
+      );
+      final car = TextPainter(
+        text: TextSpan(
+          text: String.fromCharCode(Icons.directions_car_rounded.codePoint),
+          style: TextStyle(
+            fontFamily: Icons.directions_car_rounded.fontFamily,
+            package: Icons.directions_car_rounded.fontPackage,
+            color: const Color(0xFF8D4C3C),
+            fontSize: 24,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      car.paint(canvas, const Offset(8, 99));
+      final speed = TextPainter(
+        text: TextSpan(
+          text: '${speedKph.round()} km/h',
+          style: const TextStyle(
+            color: Color(0xFF633322),
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: 100);
+      speed.paint(canvas, const Offset(38, 100));
+    }
+    final image = await recorder.endRecording().toImage(
+      speedKph == null ? 96 : 140,
+      speedKph == null ? 96 : 132,
+    );
     final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!
         .buffer
         .asUint8List();
     return gm.BitmapDescriptor.bytes(bytes, imagePixelRatio: 2);
   }
 
+  double? _movementSpeed(dynamic point) {
+    if (point is! Map) return null;
+    final measured = DateTime.tryParse(point['updatedAt'] as String? ?? '');
+    final speed = point['speedMps'], accuracy = point['speedAccuracyMps'];
+    if (measured == null ||
+        DateTime.now().difference(measured).inSeconds > 90 ||
+        speed is! num ||
+        !speed.isFinite ||
+        speed < 1 ||
+        speed > 100)
+      return null;
+    if (accuracy is num && (accuracy > 2 || speed <= accuracy)) return null;
+    return speed.toDouble() * 3.6;
+  }
+
   Future<void> _refreshMarkers() async {
+    final generation = ++_markerGeneration;
     final locations = widget.store.locations;
     final me = point(locations[widget.store.uid]);
     final partner = point(locations[widget.store.partnerUid]);
@@ -129,6 +192,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
             widget.store.avatarPath,
             widget.store.yourName,
             true,
+            _movementSpeed(locations[widget.store.uid]),
           ),
           onTap: () =>
               _map?.animateCamera(gm.CameraUpdate.newLatLngZoom(me, 15)),
@@ -144,13 +208,15 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
             widget.store.partnerAvatarPath,
             widget.store.partnerName,
             false,
+            _movementSpeed(locations[widget.store.partnerUid]),
           ),
           onTap: () =>
               _map?.animateCamera(gm.CameraUpdate.newLatLngZoom(partner, 15)),
           infoWindow: gm.InfoWindow(title: widget.store.partnerName),
         ),
       );
-    if (mounted) setState(() => _markers = next);
+    if (mounted && generation == _markerGeneration)
+      setState(() => _markers = next);
   }
 
   @override
@@ -185,18 +251,20 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
       final consent = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Share your location?'),
-          content: const Text(
-            'When enabled, your paired partner can see your location, including while Closer is in the background. A visible system indicator or notification will show while sharing. Turn it off any time in Settings.',
+          title: Text(tr('Share your location?')),
+          content: Text(
+            tr(
+              'When enabled, your paired partner can see your location, including while Closer is in the background. A visible system indicator or notification will show while sharing. Turn it off any time in Settings.',
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Not now'),
+              child: Text(tr('Not now')),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Continue'),
+              child: Text(tr('Continue')),
             ),
           ],
         ),
@@ -231,18 +299,20 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
           final openSettings = await showDialog<bool>(
             context: context,
             builder: (context) => AlertDialog(
-              title: const Text('Allow background location'),
-              content: const Text(
-                'To keep sharing when Closer is closed or your screen is off, set Closer location access to “Allow all the time” in your phone settings. You can still choose when to share inside Closer.',
+              title: Text(tr('Allow background location')),
+              content: Text(
+                tr(
+                  'To keep sharing when Closer is closed or your screen is off, set Closer location access to “Allow all the time” in your phone settings. You can still choose when to share inside Closer.',
+                ),
               ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context, false),
-                  child: const Text('Later'),
+                  child: Text(tr('Later')),
                 ),
                 FilledButton(
                   onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Open settings'),
+                  child: Text(tr('Open settings')),
                 ),
               ],
             ),
@@ -283,8 +353,8 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
     if (defaultTargetPlatform == TargetPlatform.android) {
       return AndroidSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 50,
-        intervalDuration: const Duration(seconds: 20),
+        distanceFilter: 10,
+        intervalDuration: const Duration(seconds: 15),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationTitle: 'Closer · Location sharing is on',
           notificationText: 'Your partner can see your shared location. Open Closer to pause.',
@@ -298,7 +368,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
     if (defaultTargetPlatform == TargetPlatform.iOS) {
       return AppleSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 50,
+        distanceFilter: 10,
         pauseLocationUpdatesAutomatically: false,
         allowBackgroundLocationUpdates: true,
         showBackgroundLocationIndicator: true,
@@ -306,7 +376,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
     }
     return const LocationSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 50,
+      distanceFilter: 10,
     );
   }
 
@@ -317,7 +387,7 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
             .listen(
               (p) async {
                 if (_lastSent == null ||
-                    DateTime.now().difference(_lastSent!).inSeconds >= 20) {
+                    DateTime.now().difference(_lastSent!).inSeconds >= 15) {
                   try {
                     await _send(p);
                   } catch (_) {
@@ -338,7 +408,18 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
   }
 
   Future<void> _send(Position p) async {
-    await widget.store.shareLocation({'lat': p.latitude, 'lon': p.longitude});
+    if (!widget.store.paired) return;
+    final fresh =
+        DateTime.now().difference(p.timestamp).abs() <
+        const Duration(seconds: 90);
+    await widget.store.shareLocation({
+      'lat': p.latitude,
+      'lon': p.longitude,
+      'speedMps': fresh && p.speed.isFinite && p.speed >= 0 ? p.speed : null,
+      'speedAccuracyMps': p.speedAccuracy.isFinite && p.speedAccuracy >= 0
+          ? p.speedAccuracy
+          : null,
+    });
     _lastSent = DateTime.now();
   }
 
@@ -351,8 +432,20 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
           sharing: _sharing,
           busy: _busy,
           onProfile: widget.onProfile,
+          onNotifications: widget.onNotifications,
           avatarPath: widget.store.avatarPath,
           onAvatar: widget.onAvatar,
+          therapyLanguage: widget.store.therapyLanguage,
+          onTherapyLanguageChanged: widget.store.setTherapyLanguage,
+          canManageAccount: widget.store.user != null,
+          onSignOut: () => FirebaseAuth.instance.signOut(),
+          onUnpair: () async {
+            await widget.store.unpair();
+            await _position?.cancel();
+            _position = null;
+            await NotificationService.instance.clearDistanceNotification();
+            if (mounted) setState(() => _sharing = false);
+          },
           onShareChanged: (enabled) async {
             if (enabled) {
               await _start();
@@ -396,6 +489,16 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Location reminder sent to $name in chat.')),
     );
+  }
+
+  Future<void> _openSavedPlaces(gm.LatLng center) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) =>
+            SavedPlacesPage(store: widget.store, initialCenter: center),
+      ),
+    );
+    if (mounted) setState(() {});
   }
 
   @override
@@ -488,6 +591,16 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
             ],
           ),
         ),
+        if (me != null && partner != null)
+          Positioned(
+            top: MediaQuery.paddingOf(context).top + 78,
+            right: 18,
+            child: _round(
+              Icons.bookmark_add_outlined,
+              () => _openSavedPlaces(me),
+              'Saved places and alerts',
+            ),
+          ),
         if (_error != null || _tileError || distance != null || partner == null)
           Positioned(
             left: 20,
@@ -531,8 +644,10 @@ class _LiveCoupleMapState extends State<LiveCoupleMap>
                         ],
                       ),
                     if (_tileError)
-                      const Text(
-                        'Map tiles could not load. Check your connection and reopen Map.',
+                      Text(
+                        tr(
+                          'Map tiles could not load. Check your connection and reopen Map.',
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     if (_error != null)

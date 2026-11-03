@@ -3,6 +3,10 @@ import json
 from urllib.request import Request, urlopen
 from muse_image import validate_photos
 
+LANGUAGE_NAMES = {'en': 'English', 'id': 'Bahasa Indonesia',
+                  'ms': 'Bahasa Melayu', 'hi': 'Hindi',
+                  'fil': 'Filipino (Tagalog)'}
+
 PROMPT = '''You are Metherapy, a warm and neutral AI conversation facilitator for couples.
 You are not a licensed therapist, and this is not clinical care. Do not diagnose,
 provide mental-health or medical advice, analyze personalities, or claim to know
@@ -56,10 +60,14 @@ def validate_hearing(payload):
     case = payload['case']
     fields = {'topic', 'requestedRemedy', 'names', 'statements', 'crossQuestions',
               'crossAnswers', 'rebuttals', 'judgeQuestions', 'judgeAnswers', 'evidence',
-              'appealReason', 'appealResponse', 'priorRuling'}
+              'appealReason', 'appealResponse', 'priorRuling', 'therapyLanguage'}
     if not isinstance(case, dict) or set(case) not in (fields, fields | {'latestTurn'}):
         raise ValueError('Invalid case fields')
-    result = {'topic': text(case['topic'], 1000, True),
+    language = case['therapyLanguage']
+    if language not in LANGUAGE_NAMES:
+        raise ValueError('Invalid therapy language')
+    result = {'therapyLanguage': language,
+              'topic': text(case['topic'], 1000, True),
               'requestedRemedy': text(case['requestedRemedy'], 1000, payload['action'] != 'opening'),
               'names': pair(case['names'], 50, True)}
     for key in ['statements', 'crossQuestions', 'crossAnswers', 'rebuttals', 'judgeQuestions', 'judgeAnswers']:
@@ -173,7 +181,8 @@ def call_hearing(payload, key, model):
     content = [{'type': 'input_text', 'text': json.dumps({'action': action, 'case': metadata})},
                {'type': 'input_text', 'text': 'Use exactly these JSON fields: ' + json.dumps(schema) +
                 '. evidenceReview must contain one {id, observation, limitation} per supplied exhibit; [] if none. ' +
-                'Questions are ordered participant 0 then participant 1. Copy requestedRemedy verbatim as the request context; proposedRemedy is a voluntary shared next step. ' + guidance}]
+                'Questions are ordered participant 0 then participant 1. Copy requestedRemedy verbatim as the request context; proposedRemedy is a voluntary shared next step. ' + guidance +
+                f' Write every natural-language response in {LANGUAGE_NAMES[case["therapyLanguage"]]}. Understand mixed-language input, but keep the reply in the selected language. Keep JSON keys and decision enum values unchanged in English; preserve requestedRemedy verbatim.'}]
     for exhibit in exhibits:
         content.extend([{'type': 'input_text', 'text': f"Exhibit {exhibit['id']} submitted by participant {exhibit['owner']}; caption is unverified: {exhibit['caption']}"},
                         {'type': 'input_image', 'image_url': exhibit['image_url']}])

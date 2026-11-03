@@ -1,3 +1,5 @@
+import '../localization/closer_localizations.dart';
+
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -69,9 +71,9 @@ class _CoupleMapState extends State<CoupleMap> {
               future: _outlines,
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
-                  return const ColoredBox(
+                  return ColoredBox(
                     color: Color(0xFF9BD8DC),
-                    child: Center(child: Text('Map preview unavailable')),
+                    child: Center(child: Text(tr('Map preview unavailable'))),
                   );
                 }
                 if (!snapshot.hasData) {
@@ -142,8 +144,8 @@ class _CoupleMapState extends State<CoupleMap> {
                   ),
                   child: Column(
                     children: [
-                      const Text(
-                        'Closer',
+                      Text(
+                        tr('Closer'),
                         style: TextStyle(
                           letterSpacing: 4,
                           fontSize: 10,
@@ -159,8 +161,8 @@ class _CoupleMapState extends State<CoupleMap> {
                       ),
                       const SizedBox(height: 2),
                       if (widget.startedOn == null)
-                        const Text(
-                          'Add your date',
+                        Text(
+                          tr('Add your date'),
                           style: TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w700,
@@ -201,8 +203,8 @@ class _CoupleMapState extends State<CoupleMap> {
                 color: ivory.withValues(alpha: .94),
                 borderRadius: BorderRadius.circular(16),
               ),
-              child: const Text(
-                'Illustrative map · Locations not connected',
+              child: Text(
+                tr('Illustrative map · Locations not connected'),
                 style: TextStyle(color: slate, fontSize: 11),
               ),
             ),
@@ -210,8 +212,8 @@ class _CoupleMapState extends State<CoupleMap> {
           Positioned(
             left: 16,
             bottom: 110 + MediaQuery.paddingOf(context).bottom,
-            child: const Text(
-              'Map outlines: Natural Earth',
+            child: Text(
+              tr('Map outlines: Natural Earth'),
               style: TextStyle(fontSize: 9, color: Color(0xFF385D63)),
             ),
           ),
@@ -498,83 +500,101 @@ class CoupleDock extends StatelessWidget {
   });
   final int selected;
   final ValueChanged<int> onSelected;
-  static const labels = ['Map', 'Metherapy', 'Memories', 'Chat', 'Us'];
   static const icons = [
     Icons.add_location_alt_outlined,
     Icons.auto_awesome_rounded,
+    Icons.camera_alt_rounded,
     Icons.photo_library_outlined,
     Icons.forum_outlined,
-    Icons.favorite_border_rounded,
   ];
   @override
-  Widget build(BuildContext context) => SafeArea(
-    top: false,
-    minimum: const EdgeInsets.fromLTRB(10, 0, 10, 12),
-    child: Container(
-      height: 88,
-      decoration: BoxDecoration(
-        color: ivory,
-        borderRadius: BorderRadius.circular(32),
-        border: Border.all(color: const Color(0xFFFFE9DA)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x193E6667),
-            blurRadius: 24,
-            offset: Offset(0, 7),
-          ),
-        ],
-      ),
-      child: Row(
-        children: List.generate(
-          labels.length,
-          (index) => Expanded(
-            child: Semantics(
-              selected: selected == index,
-              button: true,
-              label: labels[index],
-              child: InkWell(
-                onTap: () => onSelected(index),
-                borderRadius: BorderRadius.circular(28),
-                child: ExcludeSemantics(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        width: 48,
-                        height: 42,
-                        decoration: BoxDecoration(
-                          color: selected == index
-                              ? const Color(0xFFFFDFCD)
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(24),
+  Widget build(BuildContext context) {
+    final labels = [
+      tr('Map'),
+      tr('Metherapy'),
+      tr('Camera'),
+      tr('Memories'),
+      tr('Chat'),
+    ];
+    return SafeArea(
+      top: false,
+      minimum: const EdgeInsets.fromLTRB(10, 0, 10, 12),
+      child: Container(
+        height: 88,
+        decoration: BoxDecoration(
+          color: ivory,
+          borderRadius: BorderRadius.circular(32),
+          border: Border.all(color: const Color(0xFFFFE9DA)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x193E6667),
+              blurRadius: 24,
+              offset: Offset(0, 7),
+            ),
+          ],
+        ),
+        child: Row(
+          children: List.generate(
+            labels.length,
+            (index) => Expanded(
+              child: Semantics(
+                selected: selected == index,
+                button: true,
+                label: labels[index],
+                child: InkWell(
+                  onTap: () => onSelected(index),
+                  borderRadius: BorderRadius.circular(28),
+                  child: ExcludeSemantics(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          width: index == 2 ? 54 : 48,
+                          height: index == 2 ? 48 : 42,
+                          decoration: BoxDecoration(
+                            color: index == 2
+                                ? peach
+                                : selected == index
+                                ? const Color(0xFFFFDFCD)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(
+                              index == 2 ? 28 : 24,
+                            ),
+                          ),
+                          child: Icon(
+                            icons[index],
+                            size: index == 2 ? 29 : 28,
+                            color: index == 2 ? Colors.white : slate,
+                          ),
                         ),
-                        child: Icon(icons[index], size: 28, color: slate),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        labels[index],
-                        maxLines: 1,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: selected == index
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          color: selected == index
-                              ? const Color(0xFFB85842)
-                              : slate,
+                        const SizedBox(height: 3),
+                        Text(
+                          labels[index],
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: selected == index
+                                ? FontWeight.w700
+                                : FontWeight.w500,
+                            color: selected == index
+                                ? const Color(0xFFB85842)
+                                : slate,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      Container(
-                        height: 3,
-                        width: 15,
-                        decoration: BoxDecoration(
-                          color: selected == index ? peach : Colors.transparent,
-                          borderRadius: BorderRadius.circular(4),
+                        const SizedBox(height: 4),
+                        Container(
+                          height: 3,
+                          width: 15,
+                          decoration: BoxDecoration(
+                            color: selected == index
+                                ? peach
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -582,6 +602,6 @@ class CoupleDock extends StatelessWidget {
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }

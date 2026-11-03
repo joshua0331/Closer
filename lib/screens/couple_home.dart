@@ -1,10 +1,15 @@
-import '../services/backend_access.dart';
+import 'dart:async';
+
+import 'package:geolocator/geolocator.dart';
+
+import '../localization/closer_localizations.dart';
 import 'shared_court.dart';
 
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../models/cloud_couple_store.dart';
 import 'live_couple_map.dart';
+import 'camera_capture_screen.dart';
 
 import 'package:flutter/services.dart';
 
@@ -15,8 +20,9 @@ import 'package:image_cropper/image_cropper.dart';
 import '../models/couple_store.dart';
 import 'court_experience.dart';
 import 'couple_map.dart';
-import 'demo_access_page.dart';
+import 'room_chat.dart';
 import '../services/photo_media.dart';
+import '../services/notification_service.dart';
 
 class CoupleHome extends StatefulWidget {
   const CoupleHome({super.key, required this.store});
@@ -28,13 +34,168 @@ class CoupleHome extends StatefulWidget {
 class _CoupleHomeState extends State<CoupleHome> {
   int _tab = 0;
   bool _picking = false;
+  bool _showDistanceBanner = true;
+  String? _lastDistanceBand;
+  DateTime? _lastDistanceNotificationAt;
   Map<String, dynamic>? _replyTo;
   final _message = TextEditingController();
   final _scroll = ScrollController();
   CoupleStore get store => widget.store;
 
   @override
+  void initState() {
+    super.initState();
+    store.addListener(_handleDistanceChange);
+    unawaited(NotificationService.instance.init());
+  }
+
+  double? _distanceMeters() {
+    final cloud = store;
+    if (cloud is! CloudCoupleStore || cloud.partnerUid == null) return null;
+    final locations = cloud.locations;
+    final mine = locations[cloud.uid], partner = locations[cloud.partnerUid];
+    if (mine is! Map ||
+        partner is! Map ||
+        mine['lat'] is! num ||
+        mine['lon'] is! num ||
+        partner['lat'] is! num ||
+        partner['lon'] is! num) {
+      return null;
+    }
+    return Geolocator.distanceBetween(
+      (mine['lat'] as num).toDouble(),
+      (mine['lon'] as num).toDouble(),
+      (partner['lat'] as num).toDouble(),
+      (partner['lon'] as num).toDouble(),
+    );
+  }
+
+  void _handleDistanceChange() {
+    final meters = _distanceMeters();
+    if (meters == null) {
+      _lastDistanceBand = null;
+      unawaited(NotificationService.instance.clearDistanceNotification());
+      return;
+    }
+    final distance = meters < 1000
+        ? '${meters.round()} m apart'
+        : '${(meters / 1000).toStringAsFixed(1)} km apart';
+    final now = DateTime.now();
+    if (_lastDistanceBand == distance ||
+        (_lastDistanceNotificationAt != null &&
+            now.difference(_lastDistanceNotificationAt!) <
+                const Duration(seconds: 30)))
+      return;
+    _lastDistanceBand = distance;
+    _lastDistanceNotificationAt = now;
+    unawaited(
+      NotificationService.instance.showPartnerDistance(
+        store.partnerName.isEmpty ? 'Your partner' : store.partnerName,
+        distance,
+      ),
+    );
+  }
+
+  Future<void> _remindPartnerToShareLocation() async {
+    try {
+      await store.addMessage(
+        'Location reminder: please share your location when you’re comfortable. You can turn it on in Closer Settings.',
+      );
+      _notice('Location reminder sent in chat.');
+    } catch (_) {
+      _notice('Could not send the location reminder. Please retry.');
+    }
+  }
+
+  Widget _chatDistanceBanner() {
+    final cloud = store is CloudCoupleStore ? store as CloudCoupleStore : null;
+    final meters = _distanceMeters();
+    final partner = cloud == null || cloud.partnerUid == null
+        ? null
+        : cloud.locations[cloud.partnerUid];
+    final partnerShared =
+        partner is Map && partner['lat'] is num && partner['lon'] is num;
+    final partnerName = store.partnerName.isEmpty
+        ? 'Your partner'
+        : store.partnerName;
+    final text = meters != null
+        ? '$partnerName is ${meters < 1000 ? '${meters.round()} m' : '${(meters / 1000).toStringAsFixed(1)} km'} away'
+        : partnerShared
+        ? 'Your location is not shared yet'
+        : '$partnerName has not shared a location';
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .78),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFFFD9C8)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.near_me_rounded, color: Color(0xFFE77A5E), size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+          ),
+          if (!partnerShared && cloud != null)
+            TextButton(
+              onPressed: _remindPartnerToShareLocation,
+              child: Text(tr('Remind')),
+            ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: tr('Hide distance'),
+            onPressed: () => setState(() => _showDistanceBanner = false),
+            icon: const Icon(Icons.close_rounded, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chatSuggestions(double? meters) {
+    final suggestions = meters == null
+        ? ["How’s your day going?", 'Miss you!', 'Send me a photo?']
+        : meters < 500
+        ? [
+            "You’re super close! Want to meet up?",
+            'Grab a drink together?',
+            'Look behind you! 👋',
+          ]
+        : meters < 5000
+        ? ["How’s it going over there?", 'Bring home dinner?', 'See you soon!']
+        : [
+            'Safe travels!',
+            'Thinking of you from afar 💛',
+            'Call me when you’re free!',
+          ];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      child: Row(
+        children: [
+          for (final suggestion in suggestions)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ActionChip(
+                label: Text(suggestion),
+                onPressed: () {
+                  _message.text = suggestion;
+                  _message.selection = TextSelection.collapsed(
+                    offset: suggestion.length,
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
   void dispose() {
+    store.removeListener(_handleDistanceChange);
     _message.dispose();
     _scroll.dispose();
     super.dispose();
@@ -46,19 +207,13 @@ class _CoupleHomeState extends State<CoupleHome> {
     }
   }
 
-  Future<void> _demoAccess() async {
-    await Navigator.of(context)
-        .push(MaterialPageRoute<void>(builder: (_) => const DemoAccessPage()));
-    if (mounted) setState(() {});
-  }
-
   Future<void> _profile() async {
     if (store.online) {
       final name = await showDialog<String>(
         context: context,
-        builder: (_) => const _TextDialog(
-          title: 'Your Closer profile',
-          label: 'Your name',
+        builder: (_) => _TextDialog(
+          title: tr('Your Closer profile'),
+          label: tr('Your name'),
           description: 'Your partner chooses their own name on their phone.',
           action: 'Save name',
         ),
@@ -115,7 +270,7 @@ class _CoupleHomeState extends State<CoupleHome> {
             ],
           ),
           IOSUiSettings(
-            title: 'Crop profile photo',
+            title: tr('Crop profile photo'),
             aspectRatioLockEnabled: false,
           ),
         ],
@@ -124,7 +279,7 @@ class _CoupleHomeState extends State<CoupleHome> {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Use this profile photo?'),
+          title: Text(tr('Use this profile photo?')),
           content: ClipRRect(
             borderRadius: BorderRadius.circular(18),
             child: photoImage(
@@ -137,11 +292,11 @@ class _CoupleHomeState extends State<CoupleHome> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Choose again'),
+              child: Text(tr('Choose again')),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Confirm photo'),
+              child: Text(tr('Confirm photo')),
             ),
           ],
         ),
@@ -170,17 +325,23 @@ class _CoupleHomeState extends State<CoupleHome> {
     }
     final issue = await showDialog<String>(
       context: context,
-      builder: (_) => const _TextDialog(
-        title: 'Invite your partner to a Metherapy session',
-        label: 'Session topic',
-        hint: 'What would you like to work through together?',
+      builder: (_) => _TextDialog(
+        title: tr('Invite your partner to a Metherapy session'),
+        label: tr('Session topic'),
+        hint: tr('What would you like to work through together?'),
         description: 'Your partner sees this topic before joining the session.',
         action: 'Invite to session',
       ),
     );
     if (issue == null || !mounted) return;
-    await store.addMessage(issue, summons: true);
-    if (mounted) setState(() => _tab = 3);
+    await store.addMessage(
+      issue,
+      summons: true,
+      therapyLanguage: store is CloudCoupleStore
+          ? (store as CloudCoupleStore).therapyLanguage
+          : 'en',
+    );
+    if (mounted) setState(() => _tab = 4);
   }
 
   Future<void> _openCourt(Map<String, dynamic> message) async {
@@ -188,14 +349,14 @@ class _CoupleHomeState extends State<CoupleHome> {
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Text('Session ended'),
-          content: const Text(
-            'This Metherapy session is finished and can’t be re-entered.',
+          title: Text(tr('Session ended')),
+          content: Text(
+            tr('This Metherapy session is finished and can’t be re-entered.'),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Got it'),
+              child: Text(tr('Got it')),
             ),
           ],
         ),
@@ -242,9 +403,9 @@ class _CoupleHomeState extends State<CoupleHome> {
       if (image == null || !mounted) return;
       final caption = await showDialog<String>(
         context: context,
-        builder: (_) => const _TextDialog(
-          title: 'A photo for your conversation',
-          label: 'Caption (optional)',
+        builder: (_) => _TextDialog(
+          title: tr('A photo for your conversation'),
+          label: tr('Caption (optional)'),
           description: 'This photo will be shared with your paired partner.',
           action: 'Add to chat',
           allowEmpty: true,
@@ -293,16 +454,16 @@ class _CoupleHomeState extends State<CoupleHome> {
             child: InteractiveViewer(
               child: photoImage(
                 path,
-                errorBuilder: (_, error, stack) => const Padding(
+                errorBuilder: (_, error, stack) => Padding(
                   padding: EdgeInsets.all(24),
-                  child: Text('Photo unavailable on this device.'),
+                  child: Text(tr('Photo unavailable on this device.')),
                 ),
               ),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
+            child: Text(tr('Close')),
           ),
         ],
       ),
@@ -349,9 +510,9 @@ class _CoupleHomeState extends State<CoupleHome> {
                   entry['photoPath'] as String,
                   height: 200,
                   fit: BoxFit.cover,
-                  errorBuilder: (_, error, stack) => const SizedBox(
+                  errorBuilder: (_, error, stack) => SizedBox(
                     height: 100,
-                    child: Center(child: Text('Photo unavailable')),
+                    child: Center(child: Text(tr('Photo unavailable'))),
                   ),
                 ),
               ),
@@ -373,7 +534,7 @@ class _CoupleHomeState extends State<CoupleHome> {
               ),
               const SizedBox(width: 6),
               PopupMenuButton<String>(
-                tooltip: 'Message options',
+                tooltip: tr('Message options'),
                 iconSize: 18,
                 padding: EdgeInsets.zero,
                 onSelected: (value) async {
@@ -390,7 +551,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                   }
                 },
                 itemBuilder: (_) => [
-                  const PopupMenuItem(value: 'reply', child: Text('Reply')),
+                  PopupMenuItem(value: 'reply', child: Text(tr('Reply'))),
                   PopupMenuItem(
                     value: 'heart',
                     child: Text(
@@ -400,17 +561,14 @@ class _CoupleHomeState extends State<CoupleHome> {
                     ),
                   ),
                   if ((entry['text'] as String).isNotEmpty)
-                    const PopupMenuItem(
-                      value: 'copy',
-                      child: Text('Copy text'),
-                    ),
+                    PopupMenuItem(value: 'copy', child: Text(tr('Copy text'))),
                 ],
               ),
             ],
           ),
           if (entry['hearted'] == true)
-            const Text(
-              '♥',
+            Text(
+              tr('♥'),
               style: TextStyle(color: Color(0xFFB85842), fontSize: 20),
             ),
         ],
@@ -431,9 +589,9 @@ class _CoupleHomeState extends State<CoupleHome> {
       if (image == null || !mounted) return;
       final caption = await showDialog<String>(
         context: context,
-        builder: (_) => const _TextDialog(
-          title: 'A moment worth keeping',
-          label: 'Write a caption',
+        builder: (_) => _TextDialog(
+          title: tr('A moment worth keeping'),
+          label: tr('Write a caption'),
           description: 'This memory will be shared with your paired partner.',
           action: 'Keep memory',
         ),
@@ -468,22 +626,69 @@ class _CoupleHomeState extends State<CoupleHome> {
       context: context,
       showDragHandle: true,
       backgroundColor: ivory,
-      builder: (context) => const SafeArea(
+      builder: (context) => SafeArea(
         child: Padding(
-          padding: EdgeInsets.fromLTRB(24, 8, 24, 32),
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(Icons.notifications_none_rounded, size: 38, color: peach),
               SizedBox(height: 16),
               Text(
-                'Your little updates',
+                tr('Your little updates'),
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
               ),
               SizedBox(height: 12),
               Text(
-                'Push notifications are not enabled yet. Your partner will see shared messages when they open Closer.',
+                tr(
+                  'Get new message and saved-place alerts, plus a quiet distance update while both of you share location.',
+                ),
                 textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: () async {
+                  final service = NotificationService.instance;
+                  final enabled = await service.isEnabled();
+                  var granted = true;
+                  if (enabled) {
+                    if (store is CloudCoupleStore) {
+                      try {
+                        await (store as CloudCoupleStore).unregisterPushToken();
+                      } catch (_) {
+                        _notice(
+                          'Could not turn off push alerts. Please retry.',
+                        );
+                        return;
+                      }
+                    }
+                    await service.disable();
+                  } else {
+                    granted = await service.enable();
+                    if (granted && store is CloudCoupleStore) {
+                      try {
+                        await (store as CloudCoupleStore).registerPushToken();
+                      } catch (_) {
+                        _notice(
+                          'Distance updates are enabled, but push registration failed. Please retry.',
+                        );
+                      }
+                    }
+                    _lastDistanceBand = null;
+                    _lastDistanceNotificationAt = null;
+                    _handleDistanceChange();
+                  }
+                  if (context.mounted) Navigator.pop(context);
+                  _notice(
+                    enabled
+                        ? 'Notifications turned off.'
+                        : granted
+                        ? 'Notifications are on.'
+                        : 'Notification permission was not granted.',
+                  );
+                },
+                icon: const Icon(Icons.notifications_active_outlined),
+                label: Text(tr('Manage notifications')),
               ),
             ],
           ),
@@ -495,72 +700,113 @@ class _CoupleHomeState extends State<CoupleHome> {
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: store,
-    builder: (context, _) => Scaffold(
-      extendBody: _tab == 0,
-      appBar: null,
-      bottomNavigationBar: CoupleDock(
-        selected: _tab,
-        onSelected: (index) => setState(() => _tab = index),
-      ),
-      body: _tab == 0
-          ? store is CloudCoupleStore
-                ? LiveCoupleMap(
-                    store: store as CloudCoupleStore,
-                    onProfile: _profile,
-                    onDate: _date,
-                    onAvatar: _uploadAvatar,
-                  )
-                : CoupleMap(
-                    yourName: store.yourName,
-                    partnerName: store.partnerName,
-                    startedOn: store.relationshipStart,
-                    onProfile: _profile,
-                    onDate: _date,
-                    onNotifications: _notifications,
-                  )
-          : SafeArea(
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 720),
-                  child: Column(
-                    children: [
-                      if (!store.online)
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 9,
-                          ),
-                          color: const Color(0xFFFFEADB),
-                          child: const Text(
-                            'LOCAL PREVIEW · No account or partner connection yet',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 11, color: slate),
-                          ),
-                        ),
-                      if (store.storageError != null)
-                        Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Text(
-                            store.storageError!,
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
-                          ),
-                        ),
-                      Expanded(
-                        child: switch (_tab) {
-                          1 => _court(),
-                          2 => _memories(),
-                          3 => _chat(),
-                          _ => _home(),
-                        },
-                      ),
-                    ],
-                  ),
+    builder: (context, _) => Container(
+      decoration: _tab == 1
+          ? const BoxDecoration(
+              image: DecorationImage(
+                image: AssetImage(
+                  'assets/branding/dreamy_peach_gradient_waves.png',
                 ),
+                fit: BoxFit.cover,
               ),
+            )
+          : null,
+      child: Scaffold(
+        backgroundColor: _tab == 1 ? Colors.transparent : null,
+        extendBody: _tab == 0 || _tab == 2,
+        appBar: null,
+        bottomNavigationBar: CoupleDock(
+          selected: _tab,
+          onSelected: (index) => setState(() => _tab = index),
+        ),
+        body: Stack(
+          children: [
+            Offstage(
+              offstage: _tab != 0,
+              child: store is CloudCoupleStore
+                  ? LiveCoupleMap(
+                      store: store as CloudCoupleStore,
+                      onProfile: _profile,
+                      onDate: _date,
+                      onAvatar: _uploadAvatar,
+                      onNotifications: _notifications,
+                    )
+                  : CoupleMap(
+                      yourName: store.yourName,
+                      partnerName: store.partnerName,
+                      startedOn: store.relationshipStart,
+                      onProfile: _profile,
+                      onDate: _date,
+                      onNotifications: _notifications,
+                    ),
             ),
+            if (_tab != 0)
+              _tab == 2
+                  ? CameraCaptureScreen(
+                      store: store,
+                      onClose: () => setState(() => _tab = 0),
+                    )
+                  : SafeArea(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 720),
+                          child: Column(
+                            children: [
+                              if (!store.online)
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 9,
+                                  ),
+                                  color: const Color(0xFFFFEADB),
+                                  child: Text(
+                                    tr(
+                                      'LOCAL PREVIEW · No account or partner connection yet',
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: slate,
+                                    ),
+                                  ),
+                                ),
+                              if (store.storageError != null)
+                                Padding(
+                                  padding: const EdgeInsets.all(8),
+                                  child: Text(
+                                    store.storageError!,
+                                    style: TextStyle(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .error,
+                                    ),
+                                  ),
+                                ),
+                              Expanded(
+                                child: switch (_tab) {
+                                  1 => _court(),
+                                  3 => _memories(),
+                                  4 =>
+                                    store is CloudCoupleStore
+                                        ? RoomChat(
+                                            store: store as CloudCoupleStore,
+                                            onAttach: _attachChatPhoto,
+                                            onInvite: _summon,
+                                            sessionBuilder: _summonsCard,
+                                          )
+                                        : _chat(),
+                                  _ => _home(),
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+          ],
+        ),
+      ),
     ),
   );
   Widget _heading(String title, String subtitle) => Padding(
@@ -608,11 +854,10 @@ class _CoupleHomeState extends State<CoupleHome> {
       if (store.online)
         OutlinedButton.icon(
           onPressed: () async {
-            BackendAccess.instance.disconnect();
             await FirebaseAuth.instance.signOut();
           },
           icon: const Icon(Icons.logout),
-          label: const Text('Sign out'),
+          label: Text(tr('Sign out')),
         ),
       _heading(
         store.hasProfile
@@ -623,7 +868,7 @@ class _CoupleHomeState extends State<CoupleHome> {
       OutlinedButton.icon(
         onPressed: _date,
         icon: const Icon(Icons.calendar_month_outlined),
-        label: const Text('Our anniversary'),
+        label: Text(tr('Our anniversary')),
       ),
       const SizedBox(height: 16),
       _card(
@@ -632,18 +877,12 @@ class _CoupleHomeState extends State<CoupleHome> {
         'Your accounts are paired. Messages and memories sync with your partner; no rooms to recreate.',
         action: FilledButton(
           onPressed: _profile,
-          child: Text(store.hasProfile ? 'Edit your name' : 'Set your name'),
+          child: Text(
+            store.hasProfile ? tr('Edit your name') : tr('Set your name'),
+          ),
         ),
       ),
-      _card(
-        Icons.auto_awesome_outlined,
-        'Meta AI demo access',
-        'Connect with a private demo code to use Metherapy and Muse Image. Your own Meta account is not required.',
-        action: OutlinedButton(
-          onPressed: _demoAccess,
-          child: const Text('AI demo access'),
-        ),
-      ),
+
       _card(
         Icons.near_me_outlined,
         'Distance, when you both choose.',
@@ -663,7 +902,7 @@ class _CoupleHomeState extends State<CoupleHome> {
         'Make space to hear each other with a guided Metherapy session.',
         action: OutlinedButton(
           onPressed: _summon,
-          child: const Text('Invite partner to a session'),
+          child: Text(tr('Invite partner to a session')),
         ),
       ),
     ],
@@ -695,21 +934,31 @@ class _CoupleHomeState extends State<CoupleHome> {
                 style: Theme.of(context).textTheme.titleLarge,
               ),
             ),
+            if (!_showDistanceBanner)
+              IconButton(
+                onPressed: () => setState(() => _showDistanceBanner = true),
+                icon: const Icon(Icons.near_me_outlined),
+                tooltip: tr('Show shared distance'),
+              ),
             IconButton(
               onPressed: _summon,
               icon: const Icon(Icons.auto_awesome_rounded),
-              tooltip: 'Invite partner to a session',
+              tooltip: tr('Invite partner to a session'),
             ),
           ],
         ),
       ),
+      if (_showDistanceBanner) _chatDistanceBanner(),
+      _chatSuggestions(_distanceMeters()),
       Expanded(
         child: store.messages.isEmpty
-            ? const Center(
+            ? Center(
                 child: Padding(
                   padding: EdgeInsets.all(24),
                   child: Text(
-                    'Your story starts here.\nSend your partner a message, photo or Metherapy invite.',
+                    tr(
+                      'Your story starts here.\nSend your partner a message, photo or Metherapy invite.',
+                    ),
                     textAlign: TextAlign.center,
                   ),
                 ),
@@ -744,7 +993,7 @@ class _CoupleHomeState extends State<CoupleHome> {
               ),
               IconButton(
                 onPressed: () => setState(() => _replyTo = null),
-                tooltip: 'Cancel reply',
+                tooltip: tr('Cancel reply'),
                 icon: const Icon(Icons.close),
               ),
             ],
@@ -757,7 +1006,7 @@ class _CoupleHomeState extends State<CoupleHome> {
           children: [
             IconButton(
               onPressed: _picking ? null : _attachChatPhoto,
-              tooltip: 'Attach chat photo',
+              tooltip: tr('Attach chat photo'),
               icon: const Icon(Icons.add_photo_alternate_outlined),
             ),
             Expanded(
@@ -766,8 +1015,8 @@ class _CoupleHomeState extends State<CoupleHome> {
                 minLines: 1,
                 maxLines: 4,
                 maxLength: 2000,
-                decoration: const InputDecoration(
-                  hintText: 'Write a message…',
+                decoration: InputDecoration(
+                  hintText: tr('Write a message…'),
                   counterText: '',
                 ),
                 onSubmitted: (_) => _send(),
@@ -777,7 +1026,7 @@ class _CoupleHomeState extends State<CoupleHome> {
             IconButton.filled(
               onPressed: _send,
               icon: const Icon(Icons.arrow_upward),
-              tooltip: 'Send message',
+              tooltip: tr('Send message'),
             ),
           ],
         ),
@@ -834,21 +1083,37 @@ class _CoupleHomeState extends State<CoupleHome> {
                 if ((entry['agreement'] as String? ?? '').isNotEmpty)
                   Text('Our next step: ${entry['agreement']}'),
                 const SizedBox(height: 4),
-                const Text(
-                  'This session has ended and can’t be re-entered.',
+                Text(
+                  tr('This session has ended and can’t be re-entered.'),
                   style: TextStyle(fontSize: 12, color: Color(0xFF80665D)),
                 ),
               ],
             )
           else
-            FilledButton.tonal(
-              onPressed: () => _openCourt(entry),
-              child: const Text('Enter Metherapy session'),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFFFBE92), Color(0xFFF6759E)],
+                ),
+                borderRadius: BorderRadius.circular(28),
+              ),
+              child: FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                  shadowColor: Colors.transparent,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => _openCourt(entry),
+                child: Text(
+                  tr('Enter Metherapy session'),
+                  textAlign: TextAlign.center,
+                ),
+              ),
             ),
           const SizedBox(height: 8),
           if (!store.online)
-            const Text(
-              'Local preview · partner has not been notified',
+            Text(
+              tr('Local preview · partner has not been notified'),
               style: TextStyle(fontSize: 11),
             ),
         ],
@@ -866,7 +1131,7 @@ class _CoupleHomeState extends State<CoupleHome> {
       FilledButton.icon(
         onPressed: _picking ? null : _addMemory,
         icon: const Icon(Icons.add_photo_alternate_outlined),
-        label: Text(_picking ? 'Adding photo…' : 'Add a memory'),
+        label: Text(_picking ? tr('Adding photo…') : tr('Add a memory')),
       ),
       const SizedBox(height: 20),
       if (store.memories.isEmpty)
@@ -886,10 +1151,10 @@ class _CoupleHomeState extends State<CoupleHome> {
                 memory['path'] as String,
                 height: 280,
                 fit: BoxFit.cover,
-                errorBuilder: (_, error, stack) => const SizedBox(
+                errorBuilder: (_, error, stack) => SizedBox(
                   height: 160,
                   child: Center(
-                    child: Text('Photo unavailable on this device'),
+                    child: Text(tr('Photo unavailable on this device')),
                   ),
                 ),
               ),
@@ -925,7 +1190,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                   children: [
                     Expanded(
                       child: Text(
-                        'All sessions',
+                        tr('All sessions'),
                         style: Theme.of(sheetContext).textTheme.titleLarge
                             ?.copyWith(
                               color: const Color(0xFF542819),
@@ -935,7 +1200,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                     ),
                     IconButton(
                       onPressed: () => Navigator.pop(sheetContext),
-                      tooltip: 'Close',
+                      tooltip: tr('Close'),
                       icon: const Icon(Icons.close_rounded),
                     ),
                   ],
@@ -956,7 +1221,8 @@ class _CoupleHomeState extends State<CoupleHome> {
                             color: Color(0xFFB85F41),
                           ),
                           title: Text(
-                            record['topic'] as String? ?? 'Previous session',
+                            record['topic'] as String? ??
+                                tr('Previous session'),
                           ),
                           subtitle: Text(
                             '${record['agreement'] ?? 'Session ended'} · ${record['practice'] == true ? 'Practice' : 'Metherapy'}',
@@ -1002,7 +1268,7 @@ class _CoupleHomeState extends State<CoupleHome> {
     Widget historyTile(Map<String, dynamic> record) => ListTile(
       contentPadding: const EdgeInsets.only(left: 50, right: 0),
       leading: const Icon(Icons.history, color: Color(0xFFB85F41)),
-      title: Text(record['topic'] as String? ?? 'Previous session'),
+      title: Text(record['topic'] as String? ?? tr('Previous session')),
       subtitle: Text(
         '${record['agreement'] ?? 'Session ended'} · ${record['practice'] == true ? 'Practice' : 'Metherapy'}',
       ),
@@ -1011,12 +1277,6 @@ class _CoupleHomeState extends State<CoupleHome> {
 
     return Stack(
       children: [
-        Positioned.fill(
-          child: Image.asset(
-            'assets/branding/dreamy_peach_gradient_waves.png',
-            fit: BoxFit.cover,
-          ),
-        ),
         ListView(
           padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
           children: [
@@ -1028,7 +1288,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Metherapy',
+                        tr('Metherapy'),
                         style: Theme.of(context).textTheme.headlineMedium
                             ?.copyWith(
                               color: const Color(0xFF542819),
@@ -1045,8 +1305,8 @@ class _CoupleHomeState extends State<CoupleHome> {
                           borderRadius: BorderRadius.circular(8),
                         ),
                       ),
-                      const Text(
-                        'A softer space to understand each other.',
+                      Text(
+                        tr('A softer space to understand each other.'),
                         style: TextStyle(
                           fontSize: 17,
                           color: Color(0xFF663621),
@@ -1069,9 +1329,12 @@ class _CoupleHomeState extends State<CoupleHome> {
             Container(
               padding: const EdgeInsets.fromLTRB(26, 25, 26, 26),
               decoration: BoxDecoration(
-                color: const Color(0xFFFFFAF5).withValues(alpha: .97),
+                color: Colors.white.withValues(alpha: .76),
                 borderRadius: BorderRadius.circular(38),
-                border: Border.all(color: const Color(0xFFFFD5C1), width: 1.5),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: .82),
+                  width: 1.5,
+                ),
                 boxShadow: const [
                   BoxShadow(
                     color: Color(0x18B76140),
@@ -1083,14 +1346,50 @@ class _CoupleHomeState extends State<CoupleHome> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(
-                    Icons.favorite_rounded,
-                    size: 54,
-                    color: Color(0xFFF18A5B),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      ShaderMask(
+                        blendMode: BlendMode.srcIn,
+                        shaderCallback: (bounds) => const LinearGradient(
+                          colors: [Color(0xFFFFB17E), Color(0xFFF44F86)],
+                        ).createShader(bounds),
+                        child: const Icon(
+                          Icons.favorite_rounded,
+                          size: 58,
+                          color: Colors.white,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: tr('About Metherapy'),
+                        onPressed: () => showDialog<void>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: Text(tr('A guided conversation')),
+                            content: Text(
+                              tr(
+                                'Metherapy offers supportive prompts and reflections. It is not a licensed therapist or clinical care. Write a topic before inviting your partner. Both partners agree before context is sent to Meta. Take turns speaking, then hear a reflection and choose a next step together.',
+                              ),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context),
+                                child: Text(tr('Close')),
+                              ),
+                            ],
+                          ),
+                        ),
+                        icon: const Icon(
+                          Icons.info_outline_rounded,
+                          size: 34,
+                          color: Color(0xFFF17F65),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 14),
-                  const Text(
-                    'Speak. Listen. Find a next step.',
+                  Text(
+                    tr('Speak. Listen. Find a next step.'),
                     style: TextStyle(
                       fontSize: 25,
                       height: 1.2,
@@ -1099,21 +1398,18 @@ class _CoupleHomeState extends State<CoupleHome> {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  const Text(
-                    'A guided conversation with timed turns, thoughtful questions, optional photos, and a Meta AI relationship facilitator.',
-                    style: TextStyle(
-                      fontSize: 16,
-                      height: 1.45,
-                      color: Color(0xFF663621),
+                  SizedBox(
+                    height: (MediaQuery.sizeOf(context).height * .12).clamp(
+                      60.0,
+                      150.0,
                     ),
                   ),
-                  const SizedBox(height: 22),
                   SizedBox(
                     width: double.infinity,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
-                          colors: [Color(0xFFFFA477), Color(0xFFFF8056)],
+                          colors: [Color(0xFFFFB77F), Color(0xFFF34D86)],
                         ),
                         borderRadius: BorderRadius.circular(36),
                         boxShadow: const [
@@ -1139,7 +1435,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                               children: [
                                 Flexible(
                                   child: Text(
-                                    'Invite partner to a session',
+                                    tr('Invite partner to a session'),
                                     maxLines: 2,
                                     textAlign: TextAlign.center,
                                     overflow: TextOverflow.ellipsis,
@@ -1166,54 +1462,25 @@ class _CoupleHomeState extends State<CoupleHome> {
                 ],
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 24, 8, 24),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 7,
-                    height: 58,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFC2A7),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  const Expanded(
-                    child: Text(
-                      'Write what you want to talk about before inviting. Your partner sees the invitation in your conversation, and the shared topic gives the AI facilitator context. Turns are synchronized between phones.',
-                      style: TextStyle(
-                        fontSize: 15,
-                        height: 1.45,
-                        color: Color(0xFF663621),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            const SizedBox(height: 24),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: const Color(0xFFFFF9F3).withValues(alpha: .96),
+                color: Colors.white.withValues(alpha: .78),
                 borderRadius: BorderRadius.circular(30),
-                border: Border.all(color: const Color(0xFFFFD8C5), width: 1.5),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: .84),
+                  width: 1.5,
+                ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      const Icon(
-                        Icons.info_outline_rounded,
-                        size: 35,
-                        color: Color(0xFFF18A5B),
-                      ),
-                      const SizedBox(width: 16),
                       Expanded(
                         child: Text(
-                          'Previous sessions',
+                          tr('Previous sessions'),
                           style: Theme.of(context).textTheme.titleLarge
                               ?.copyWith(
                                 color: const Color(0xFF542819),
@@ -1221,21 +1488,24 @@ class _CoupleHomeState extends State<CoupleHome> {
                               ),
                         ),
                       ),
-                      if (sessionCount > 0)
-                        Text(
-                          '$sessionCount',
-                          style: const TextStyle(
-                            color: Color(0xFFB85F41),
-                            fontWeight: FontWeight.w700,
-                          ),
+                      IconButton(
+                        tooltip: tr('See all'),
+                        onPressed: () => _showAllSessions(cases, history),
+                        icon: const Icon(
+                          Icons.history_rounded,
+                          size: 34,
+                          color: Color(0xFFF27195),
                         ),
+                      ),
                     ],
                   ),
                   if (sessionCount == 0)
-                    const Padding(
-                      padding: EdgeInsets.only(left: 51, top: 4),
+                    Padding(
+                      padding: EdgeInsets.only(top: 12),
                       child: Text(
-                        'No sessions yet. Start with one thing you would like to understand together.',
+                        tr(
+                          'No sessions yet. Start with one thing you would like to understand together.',
+                        ),
                         style: TextStyle(color: Color(0xFF663621)),
                       ),
                     ),
@@ -1243,15 +1513,6 @@ class _CoupleHomeState extends State<CoupleHome> {
                     _summonsCard(cases.first)
                   else if (history.isNotEmpty)
                     historyTile(history.first),
-                  if (sessionCount > 1)
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                        onPressed: () => _showAllSessions(cases, history),
-                        icon: const Icon(Icons.history_rounded),
-                        label: const Text('See all'),
-                      ),
-                    ),
                 ],
               ),
             ),
@@ -1283,15 +1544,17 @@ class _ProfileDialogState extends State<_ProfileDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Your preview profile'),
+    title: Text(tr('Your preview profile')),
     content: SingleChildScrollView(
       child: Form(
         key: _form,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              'These names are saved locally. This does not create accounts or pair two phones.',
+            Text(
+              tr(
+                'These names are saved locally. This does not create accounts or pair two phones.',
+              ),
             ),
             const SizedBox(height: 20),
             for (final field in [
@@ -1315,7 +1578,7 @@ class _ProfileDialogState extends State<_ProfileDialog> {
     actions: [
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
+        child: Text(tr('Cancel')),
       ),
       FilledButton(
         onPressed: () {
@@ -1323,7 +1586,7 @@ class _ProfileDialogState extends State<_ProfileDialog> {
             Navigator.pop(context, [_you.text.trim(), _partner.text.trim()]);
           }
         },
-        child: const Text('Save names'),
+        child: Text(tr('Save names')),
       ),
     ],
   );
@@ -1391,7 +1654,7 @@ class _TextDialogState extends State<_TextDialog> {
     actions: [
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Cancel'),
+        child: Text(tr('Cancel')),
       ),
       FilledButton(
         onPressed: () {

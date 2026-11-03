@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 ThemeData buildCloserTheme() => ThemeData(
   useMaterial3: true,
@@ -12,6 +13,7 @@ ThemeData buildCloserTheme() => ThemeData(
     elevation: 0,
     scrolledUnderElevation: 0,
     surfaceTintColor: Colors.transparent,
+    systemOverlayStyle: SystemUiOverlayStyle.dark,
   ),
   cardTheme: CardThemeData(
     color: const Color(0xFFFFFDF9),

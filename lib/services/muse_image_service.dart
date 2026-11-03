@@ -26,7 +26,9 @@ class MuseImageService {
   final String endpoint;
   final String? _explicitToken;
   String get token => _explicitToken ?? defaultApiToken(endpoint);
-  bool get configured => endpoint.isNotEmpty && token.isNotEmpty;
+  bool get configured =>
+      endpoint.isNotEmpty &&
+      (token.isNotEmpty || hasAccountAccessFor(endpoint));
   static String _endpoint() {
     if (BackendAccess.instance.available) {
       try {
@@ -62,7 +64,8 @@ class MuseImageService {
             Uri.parse(endpoint),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $token',
+              'Authorization':
+                  'Bearer ${_explicitToken ?? await authenticatedApiToken(endpoint)}',
               'X-Request-ID': newRequestId(),
             },
             body: jsonEncode({'photos': photos.map(base64Encode).toList()}),

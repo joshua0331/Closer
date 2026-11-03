@@ -112,6 +112,15 @@ flowchart TD
 
 The deployed API uses Cloud Run with a private Meta key mounted from Secret Manager. Firebase ID tokens protect account/shared-space endpoints; every shared operation checks couple membership. Private media is served through the backend after authorization rather than public download URLs. The backend has access to a separate named database and Closer-only photo bucket, leaving iSee's default data/rules unchanged.
 
+Saved-place arrival and departure alerts use Firebase Cloud Messaging. Before deploying the updated backend, grant its runtime service account permission to send messages and enable the FCM API (replace `PROJECT_ID` with the Firebase/GCP project ID):
+
+```powershell
+gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:closer-demo-runtime@PROJECT_ID.iam.gserviceaccount.com" --role="roles/firebasecloudmessaging.admin"
+gcloud services enable fcm.googleapis.com --project=PROJECT_ID
+```
+
+Then redeploy the backend with `server/deploy.ps1`. Android uses the registered Firebase app. iOS push delivery also requires an APNs authentication key in Firebase Console → Project settings → Cloud Messaging. Place records are shared with the paired account; arrival/departure events are evaluated on the backend as new location updates arrive.
+
 AI additionally requires a private demo code, exchanged for an expiring session inside **Closer → AI demo access**. Persistent global/invite budgets, image-generation limits, duplicate-request checks and concurrency limits apply. Ordinary shared-space requests also have per-account rate/upload limits. These safeguards are not a dollar spending cap.
 
 The app asks for consent before model uploads. Shared app records/photos are intentionally stored for the paired users; this differs from the earlier transient AI proxy. The AI request sets `store: false`, which is not a blanket promise about Meta retention. Consult the applicable provider policies before using private material. Maps fetch tiles from OpenStreetMap; no bulk/offline download is provided. Preserve map attribution and use an appropriate tile provider for larger deployments.

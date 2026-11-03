@@ -30,6 +30,7 @@ def initial(couple, message):
     respondent=next(uid for uid in couple['members'] if uid!=claimant)
     people=[claimant,respondent]
     return {'people':people,'names':[couple['names'][p] for p in people],'topic':message['text'],
+            'therapyLanguage':message.get('therapyLanguage', 'en'),
             'phase':0,'joined':[],'deadline':None,'requestedRemedy':'',
             'statements':['',''],'crossQuestions':['',''],'crossAnswers':['',''],'rebuttals':['',''],
             'judgeQuestions':['',''],'judgeAnswers':['',''],'evidence':[],
@@ -185,7 +186,6 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
     try:
         if action == 'art':
             from muse_image import create_scene
-            import secrets
             reservation = security.reserve(token, 'characters', request_id, case_id + ':art:' + str(state['version']))
             photos = []
             for photo_id in state['portraits']:
@@ -202,7 +202,7 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
             @firestore.transactional
             def save_art(tx):
                 latest = ref.get(transaction=tx).to_dict()
-                if latest.get('lease', {}).get('id') != request_id:
+                if (latest.get('lease') or {}).get('id') != request_id:
                     raise AccessError(409, 'The scene request changed.')
                 latest.update(scenePhotoId=photo_id, sceneModel=answer['model'],
                               sceneResponseId=answer.get('response_id'), lease=None,
@@ -217,9 +217,10 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
         fields = [
             'topic', 'requestedRemedy', 'names', 'statements', 'crossQuestions',
             'crossAnswers', 'rebuttals', 'judgeQuestions', 'judgeAnswers',
-            'appealReason', 'appealResponse',
+            'appealReason', 'appealResponse', 'therapyLanguage',
         ]
         case = {key: state.get(key, '') for key in fields}
+        case['therapyLanguage'] = state.get('therapyLanguage', 'en')
         case['latestTurn'] = {
             'participant': state.get('lastTurnBy'),
             'phase': state.get('lastTurnPhase'),
@@ -240,7 +241,7 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
         @firestore.transactional
         def finish(tx):
             latest = ref.get(transaction=tx).to_dict()
-            if (latest.get('lease', {}).get('id') != request_id or
+            if ((latest.get('lease') or {}).get('id') != request_id or
                     latest['version'] != state['version']):
                 raise AccessError(409, 'The session changed. Refresh and retry.')
             now = time.time()
