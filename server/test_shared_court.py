@@ -1,3 +1,4 @@
+import time
 import copy
 import unittest
 from unittest.mock import patch
@@ -36,7 +37,13 @@ class SharedCourtTests(unittest.TestCase):
         self.data=Data()
     def ready(self):
         update(self.data,'a','case1',{'operation':'join'})
-        return update(self.data,'b','case1',{'operation':'join'})
+        state = update(self.data,'b','case1',{'operation':'join'})
+        state.update(openingResponseDone=True, deadline=time.time()+120, aiConsent=['a','b'])
+        self.data.db.values['closer_couples/c/hearings/case1'] = state
+        self.data.db.values['closer_couples/c/hearing_calls/case1'] = {
+            'status':'connected', 'offer':{'sdp':'offer'}, 'answer':{'sdp':'answer'},
+            'readyAt':{'a':time.time(),'b':time.time()}}
+        return state
     def test_both_partners_required_and_turn_roles_enforced(self):
         state=update(self.data,'a','case1',{'operation':'join'})
         with self.assertRaises(AccessError):update(self.data,'a','case1',{'operation':'turn','version':state['version'],'text':'Cook'})
@@ -62,3 +69,28 @@ class SharedCourtTests(unittest.TestCase):
     def test_outsider_and_unknown_case_blocked(self):
         with self.assertRaises(AccessError):update(self.data,'outsider','case1')
         with self.assertRaises(AccessError):update(self.data,'a','missing')
+
+    def test_entering_screen_does_not_start_timer(self):
+        update(self.data, 'a', 'case1', {'operation': 'join'})
+        state = update(self.data, 'b', 'case1', {'operation': 'join'})
+        self.assertIsNone(state['deadline'])
+        with self.assertRaises(AccessError):
+            update(self.data, 'a', 'case1', {'operation': 'turn', 'version':state['version'], 'text':'hello'})
+
+    def test_stale_or_ended_call_blocks_turn(self):
+        state = self.ready()
+        call = self.data.db.values['closer_couples/c/hearing_calls/case1']
+        call['readyAt']['b'] = 0
+        with self.assertRaises(AccessError):
+            update(self.data, 'a', 'case1', {'operation':'turn','version':state['version'],'text':'hello'})
+        call['readyAt']['b'] = time.time()
+        call['status'] = 'ended'
+        with self.assertRaises(AccessError):
+            update(self.data, 'a', 'case1', {'operation':'turn','version':state['version'],'text':'hello'})
+
+    def test_end_identifies_partner_and_prevents_reentry(self):
+        state = self.ready()
+        ended = update(self.data, 'b', 'case1', {'operation':'end'})
+        self.assertEqual(ended['endedByName'], 'Sam')
+        with self.assertRaises(AccessError):
+            update(self.data, 'a', 'case1', {'operation':'join'})

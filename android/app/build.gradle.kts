@@ -49,6 +49,7 @@ android {
 }
 
 dependencies {
+    implementation("io.github.webrtc-sdk:android:150.7871.04")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 

@@ -67,7 +67,12 @@ def update(data, uid, case_id, body):
     if uid not in people:
         raise AccessError(403, 'You are not part of this session.')
 
+    if hearing.get('phase') == 18 and operation != 'end':
+        raise AccessError(409, 'This session has ended.')
+
     if operation == 'join':
+        if body.get('aiConsent') is not True:
+            raise AccessError(400, 'Joining requires the displayed Meta AI consent.')
         now = time.time()
 
         @firestore.transactional
@@ -79,6 +84,9 @@ def update(data, uid, case_id, body):
                     'members': people,
                     'startedBy': uid,
                     'joined': [uid],
+                    'aiConsent': [uid],
+                    'audioConsent': [uid] if body.get('audioConsent') is True else [],
+                    'readyAt': {},
                     'status': 'waiting',
                     'offer': None,
                     'answer': None,
@@ -91,6 +99,9 @@ def update(data, uid, case_id, body):
             if uid not in call.get('members', []):
                 raise AccessError(403, 'You are not part of this call.')
             joined = list(dict.fromkeys(call.get('joined', []) + [uid]))
+            if body.get('audioConsent') is True:
+                call['audioConsent'] = list(set(call.get('audioConsent', []) + [uid]))
+            call['aiConsent'] = list(set(call.get('aiConsent', []) + [uid]))
             call.update(joined=joined, status='connected' if len(joined) == 2 else 'waiting')
             tx.set(ref, call)
             return call
@@ -104,6 +115,34 @@ def update(data, uid, case_id, body):
     call_id = body.get('callId')
     if call_id != call.get('callId'):
         raise AccessError(409, 'This call has ended. Rejoin to start a new one.')
+
+    if operation == 'ready':
+        hearing_ref = ref.parent.parent.collection('hearings').document(case_id)
+        @firestore.transactional
+        def mark_ready(tx):
+            current = ref.get(transaction=tx).to_dict() or {}
+            session = hearing_ref.get(transaction=tx).to_dict() or {}
+            if (session.get('phase') == 18 or current.get('status') == 'ended'
+                    or current.get('callId') != call_id or uid not in current.get('aiConsent', [])):
+                raise AccessError(409, 'Join the call with consent first.')
+            now = time.time()
+            ready = dict(current.get('readyAt', {}))
+            ready[uid] = now
+            tx.update(ref, {'readyAt': ready})
+            both_ready = all(now - ready.get(person, 0) < 15 for person in people)
+            if both_ready and not session.get('openingResponseDone') and not session.get('facilitatorPending'):
+                session.update(aiConsent=people, facilitatorPending=True, deadline=None,
+                               openingTriggerBy=uid, version=session.get('version', 0) + 1,
+                               voiceStartedAt=now)
+                tx.set(hearing_ref, session)
+            elif (both_ready and session.get('openingResponseDone') and not session.get('conclusionOffered')
+                  and not session.get('facilitatorPending') and not session.get('playbackPending') and not session.get('lease') and not (session.get('audioLease') or {}).get('until',0) > now
+                  and session.get('phase', 18) <= 12 and now - session.get('voiceStartedAt', now) >= 300):
+                session.update(conclusionPending=True, facilitatorPending=True, deadline=None,
+                               version=session.get('version', 0) + 1)
+                tx.set(hearing_ref, session)
+            return {'ok': True}
+        return mark_ready(data.db.transaction())
 
     if operation in {'offer', 'answer'}:
         sdp = _clean_sdp(body.get('sdp'))

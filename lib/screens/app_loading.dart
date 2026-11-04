@@ -34,22 +34,12 @@ class CloserLoadingScreen extends StatelessWidget {
                       borderRadius: BorderRadius.circular(24),
                       child: Image.asset(
                         'assets/branding/closer-logo-transparent.png',
-                        width: 88,
-                        height: 88,
-                        fit: BoxFit.cover,
+                        width: 188,
+                        height: 188,
+                        fit: BoxFit.scaleDown,
                       ),
                     ),
-                    const SizedBox(height: 22),
-                    const Text(
-                      'Closer',
-                      style: TextStyle(
-                        color: Color(0xFF542819),
-                        fontSize: 29,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -.5,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 4),
                     const Text(
                       'A little closer, every day.',
                       textAlign: TextAlign.center,

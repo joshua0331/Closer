@@ -15,6 +15,25 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jcm.closer/device_status")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "read") result.notImplemented()
+                else try { result.success(DeviceStatus.read(this)) }
+                catch (error: Exception) { result.error("unavailable", "Device status unavailable", null) }
+            }
+        CallAudioBridge(flutterEngine.dartExecutor.binaryMessenger)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jcm.closer/distance")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "show") {
+                    try {
+                        CoupleDistanceNotification.show(this, call.arguments as? Map<*, *> ?: emptyMap<String, Any>())
+                        result.success(null)
+                    } catch (error: Exception) {
+                        result.error("notification_failed", "Could not update distance notification", null)
+                    }
+                } else result.notImplemented()
+            }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WIDGET_CHANNEL)
             .setMethodCallHandler { call, result ->
                 if (call.method == "requestLocationNotification") {

@@ -61,14 +61,14 @@ def validate_hearing(payload):
     fields = {'topic', 'requestedRemedy', 'names', 'statements', 'crossQuestions',
               'crossAnswers', 'rebuttals', 'judgeQuestions', 'judgeAnswers', 'evidence',
               'appealReason', 'appealResponse', 'priorRuling', 'therapyLanguage'}
-    if not isinstance(case, dict) or set(case) not in (fields, fields | {'latestTurn'}):
+    if not isinstance(case, dict) or set(case) not in (fields, fields | {'latestTurn'}, fields | {'sessionElapsedSeconds'}, fields | {'latestTurn', 'sessionElapsedSeconds'}):
         raise ValueError('Invalid case fields')
     language = case['therapyLanguage']
     if language not in LANGUAGE_NAMES:
         raise ValueError('Invalid therapy language')
     result = {'therapyLanguage': language,
               'topic': text(case['topic'], 1000, True),
-              'requestedRemedy': text(case['requestedRemedy'], 1000, payload['action'] != 'opening'),
+              'requestedRemedy': text(case['requestedRemedy'], 1000, payload['action'] not in {'opening', 'reflection'}),
               'names': pair(case['names'], 50, True)}
     for key in ['statements', 'crossQuestions', 'crossAnswers', 'rebuttals', 'judgeQuestions', 'judgeAnswers']:
         result[key] = pair(case[key], 2000, payload['action'] not in {'opening', 'reflection'} and key in {'statements', 'rebuttals'})
@@ -95,6 +95,10 @@ def validate_hearing(payload):
             raise ValueError('Invalid latest-turn phase')
         result['latestTurn'] = {'participant': participant, 'phase': phase,
                                 'text': text(latest['text'], 2000)}
+    elapsed = case.get('sessionElapsedSeconds', 0)
+    if type(elapsed) is not int or elapsed < 0:
+        raise ValueError('Invalid session duration')
+    result['sessionElapsedSeconds'] = min(elapsed, 86400)
     evidence = case['evidence']
     if not isinstance(evidence, list) or len(evidence) > 4:
         raise ValueError('At most four exhibits')
@@ -178,6 +182,12 @@ def call_hearing(payload, key, model):
         if action == 'reflection' else
         'Use the shared perspectives to produce the requested structured response.'
     )
+    if action == 'reflection' and case.get('sessionElapsedSeconds', 0) >= 300:
+        guidance += (' Now help the conversation move toward a voluntary conclusion: briefly summarize both perspectives, '
+                     'acknowledge what is still unknown, suggest one or two practical mutual next steps tied to this topic, '
+                     'and ask whether both partners would like to try them or need more discussion. '
+                     'Do not declare agreement, force reconciliation, diagnose, or invent speech from live audio. '
+                     'If one side has not supplied text, ask for their view before reaching a conclusion.')
     content = [{'type': 'input_text', 'text': json.dumps({'action': action, 'case': metadata})},
                {'type': 'input_text', 'text': 'Use exactly these JSON fields: ' + json.dumps(schema) +
                 '. evidenceReview must contain one {id, observation, limitation} per supplied exhibit; [] if none. ' +

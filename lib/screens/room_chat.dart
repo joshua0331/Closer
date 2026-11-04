@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' show LatLng;
@@ -51,28 +53,33 @@ class _RoomChatState extends State<RoomChat> {
     return null;
   }
 
-  List<String> _getDynamicSuggestions(double? distanceInMeters) {
-    if (distanceInMeters == null) {
-      return ["How's your day going?", "Miss you!", "Send me a photo?"];
-    }
-    if (distanceInMeters < 500) {
-      return [
-        "You're super close! Want to meet up?",
-        "Grab a drink together?",
-        "Look behind you! 👋",
-      ];
-    } else if (distanceInMeters < 5000) {
-      return [
-        "How's it going over there?",
-        "Bring home dinner?",
-        "See you soon!",
-      ];
-    } else {
-      return [
-        "Safe travels!",
-        "Thinking of you from afar ❤️",
-        "Call me when you're free!",
-      ];
+  List<String> _suggestions = [];
+  bool _suggesting = false;
+  String? _suggestionError;
+  Future<void> _requestSuggestions() async {
+    if (_suggesting) return;
+    setState(() {
+      _suggesting = true;
+      _suggestionError = null;
+    });
+    try {
+      final response = await widget.store.request(
+        'couple/chat-suggestions',
+        body: {'consent': true},
+      );
+      final data = jsonDecode(response.body) as Map;
+      if (mounted)
+        setState(
+          () => _suggestions = List<String>.from(data['suggestions'] as List),
+        );
+    } catch (_) {
+      if (mounted)
+        setState(
+          () => _suggestionError =
+              'AI suggestions are unavailable. Tap to retry.',
+        );
+    } finally {
+      if (mounted) setState(() => _suggesting = false);
     }
   }
 
@@ -117,9 +124,10 @@ class _RoomChatState extends State<RoomChat> {
     final primary = scheme.primary;
 
     return Container(
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: const Color(0xFFFAF6F0),
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.zero,
         boxShadow: [
           BoxShadow(
             color: const Color(0xFF4A3B32).withValues(alpha: 0.08),
@@ -131,29 +139,33 @@ class _RoomChatState extends State<RoomChat> {
       ),
       child: Column(
         children: [
-          _buildHeader(primary),
           if (_showDistanceBanner) _buildDistanceBanner(scheme),
           _buildFeed(scheme),
-          ListenableBuilder(
-            listenable: widget.store,
-            builder: (context, _) {
-              final locations = widget.store.locations;
-              final me = _point(locations[widget.store.uid]);
-              final partner = _point(locations[widget.store.partnerUid]);
-              double? meters;
-              if (me != null && partner != null) {
-                meters = Geolocator.distanceBetween(
-                  me.latitude,
-                  me.longitude,
-                  partner.latitude,
-                  partner.longitude,
-                );
-              }
-              return _showSuggestions
-                  ? _buildSuggestions(_getDynamicSuggestions(meters))
-                  : const SizedBox.shrink();
-            },
-          ),
+          if (_showSuggestions)
+            if (_suggestions.isNotEmpty)
+              _buildSuggestions(_suggestions)
+            else
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Column(
+                  children: [
+                    TextButton.icon(
+                      onPressed: _suggesting ? null : _requestSuggestions,
+                      icon: const Icon(Icons.auto_awesome, size: 16),
+                      label: Text(
+                        _suggesting
+                            ? 'Asking Meta…'
+                            : _suggestionError ??
+                                  'Suggest replies with Meta AI',
+                      ),
+                    ),
+                    const Text(
+                      'Shares recent chat text with Meta to suggest replies. Nothing is sent to your partner until you tap Send.',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF756A66)),
+                    ),
+                  ],
+                ),
+              ),
           if (_replyTo != null)
             ListTile(
               dense: true,
@@ -363,107 +375,6 @@ class _RoomChatState extends State<RoomChat> {
           ),
         );
       },
-    );
-  }
-
-  Widget _buildHeader(Color primary) {
-    final name = widget.store.partnerName;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            primary.withValues(alpha: 0.15),
-            primary.withValues(alpha: 0.04),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.85),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: primary.withValues(alpha: 0.15)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 22,
-              foregroundImage: _avatar(widget.store.partnerAvatarPath),
-              backgroundColor: primary.withValues(alpha: 0.2),
-              child: Text(
-                name.isNotEmpty ? name[0].toUpperCase() : 'P',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                  color: primary,
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    name.isNotEmpty ? name : 'Partner',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                      color: Color(0xFF2D231F),
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      Container(
-                        width: 7,
-                        height: 7,
-                        decoration: BoxDecoration(
-                          color: widget.store.paired
-                              ? Colors.green
-                              : Colors.orange,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        widget.store.paired ? 'Paired' : 'Waiting for partner',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Color(0xFF7A6B63),
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            IconButton(
-              onPressed: widget.onInvite,
-              tooltip: tr('Invite partner to a session'),
-              icon: const Icon(Icons.auto_awesome_rounded),
-            ),
-            if (!_showDistanceBanner)
-              IconButton(
-                icon: const Icon(Icons.near_me_outlined, size: 20),
-                tooltip: 'Show distance banner',
-                onPressed: () => setState(() => _showDistanceBanner = true),
-              ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -726,7 +637,7 @@ class _RoomChatState extends State<RoomChat> {
       padding: const EdgeInsets.all(14),
       decoration: const BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(28)),
+        borderRadius: BorderRadius.zero,
       ),
       child: Row(
         children: [
@@ -734,6 +645,12 @@ class _RoomChatState extends State<RoomChat> {
             onPressed: _busy ? null : widget.onAttach,
             tooltip: tr('Attach chat photo'),
             icon: const Icon(Icons.add_photo_alternate_outlined),
+          ),
+          // Moved here from the removed header so sessions can still be started.
+          IconButton(
+            onPressed: widget.onInvite,
+            tooltip: tr('Invite partner to a session'),
+            icon: const Icon(Icons.auto_awesome_rounded),
           ),
           Expanded(
             child: TextField(

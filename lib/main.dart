@@ -54,7 +54,12 @@ class _CloserAppState extends State<CloserApp> {
         NotificationService.instance.showRemoteAlert(
           notification.title ?? 'Closer · Place alert',
           notification.body ?? 'You have a new update from your partner.',
-          chat: message.data['type'] == 'chat',
+          chat:
+              message.data['type'] == 'chat' ||
+              message.data['type'] == 'metherapy_invite',
+          sentAt:
+              DateTime.tryParse(message.data['sentAt'] as String? ?? '') ??
+              message.sentTime,
         );
       }
     });

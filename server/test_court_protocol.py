@@ -6,7 +6,7 @@ from unittest.mock import patch
 from court_protocol import call_hearing, validate_hearing, validate_answer
 
 PHOTO = base64.b64encode(b'\xff\xd8\xff' + b'fixture' * 4).decode()
-CASE = {'topic': 'Chores', 'requestedRemedy': 'Cook dinner once', 'names': ['Alex', 'Sam'],
+CASE = {'therapyLanguage': 'en','topic': 'Chores', 'requestedRemedy': 'Cook dinner once', 'names': ['Alex', 'Sam'],
         'statements': ['I did dishes', 'I did laundry'], 'crossQuestions': ['When?', 'Why?'],
         'crossAnswers': ['Yesterday', 'It was needed'], 'rebuttals': ['Clarification', 'Response'],
         'judgeQuestions': ['What matters?', 'What is feasible?'], 'judgeAnswers': ['Fairness', 'Cook once'],

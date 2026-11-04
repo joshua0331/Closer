@@ -1,3 +1,4 @@
+import time
 """Account access, budget and opening-response regressions; no external APIs."""
 import tempfile
 import unittest
@@ -59,6 +60,9 @@ class AccountAccessTests(unittest.TestCase):
         state = initial(data.couple, data.message)
         state.update(joined=['a', 'b'], aiConsent=['a', 'b'], facilitatorPending=True)
         data.db.values['closer_couples/c/hearings/case1'] = state
+        data.db.values['closer_couples/c/hearing_calls/case1'] = {
+            'status':'connected', 'offer':{'sdp':'offer'}, 'answer':{'sdp':'answer'},
+            'readyAt':{'a':time.time(),'b':time.time()}}
         with patch('shared_court.firestore.transactional', lambda fn: fn), patch('shared_court.call_hearing', return_value={'model': 'muse-spark-1.3', 'result': {'message': 'Let us hear both sides.'}}) as upstream:
             result = model_review(data, 'a', 'case1', {'operation': 'opening', 'version': 0}, 'test-key', 'muse-spark-1.3', self.access, '', 'account_request_0001')
         self.assertTrue(result['openingResponseDone'])

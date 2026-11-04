@@ -39,7 +39,10 @@ class _CoupleHomeState extends State<CoupleHome> {
   DateTime? _lastDistanceNotificationAt;
   Map<String, dynamic>? _replyTo;
   final _message = TextEditingController();
+  final _memorySearch = TextEditingController();
   final _scroll = ScrollController();
+  DateTime _calendarMonth = DateUtils.dateOnly(DateTime.now());
+  DateTime? _selectedMemoryDate;
   CoupleStore get store => widget.store;
 
   @override
@@ -81,17 +84,29 @@ class _CoupleHomeState extends State<CoupleHome> {
         ? '${meters.round()} m apart'
         : '${(meters / 1000).toStringAsFixed(1)} km apart';
     final now = DateTime.now();
-    if (_lastDistanceBand == distance ||
+    final cloud = store is CloudCoupleStore ? store as CloudCoupleStore : null;
+    final fingerprint =
+        '$distance|${store.yourName}|${store.partnerName}|${store.relationshipStart}|${now.year}-${now.month}-${now.day}|${cloud?.avatarPath}|${cloud?.partnerAvatarPath}';
+    if (_lastDistanceBand == fingerprint ||
         (_lastDistanceNotificationAt != null &&
             now.difference(_lastDistanceNotificationAt!) <
-                const Duration(seconds: 30)))
+                const Duration(seconds: 30))) {
       return;
-    _lastDistanceBand = distance;
+    }
+    _lastDistanceBand = fingerprint;
     _lastDistanceNotificationAt = now;
     unawaited(
       NotificationService.instance.showPartnerDistance(
         store.partnerName.isEmpty ? 'Your partner' : store.partnerName,
         distance,
+        yourName: store.yourName,
+        anniversary: store.relationshipStart,
+        yourAvatar: store is CloudCoupleStore
+            ? (store as CloudCoupleStore).avatarPath
+            : null,
+        partnerAvatar: store is CloudCoupleStore
+            ? (store as CloudCoupleStore).partnerAvatarPath
+            : null,
       ),
     );
   }
@@ -197,6 +212,7 @@ class _CoupleHomeState extends State<CoupleHome> {
   void dispose() {
     store.removeListener(_handleDistanceChange);
     _message.dispose();
+    _memorySearch.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -580,31 +596,175 @@ class _CoupleHomeState extends State<CoupleHome> {
     if (_picking) return;
     setState(() => _picking = true);
     try {
-      final image = await ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 1600,
-        maxHeight: 1600,
-        imageQuality: 85,
-      );
-      if (image == null || !mounted) return;
-      final caption = await showDialog<String>(
+      final source = await showModalBottomSheet<ImageSource>(
         context: context,
-        builder: (_) => _TextDialog(
-          title: tr('A moment worth keeping'),
-          label: tr('Write a caption'),
-          description: 'This memory will be shared with your paired partner.',
-          action: 'Keep memory',
+        showDragHandle: true,
+        backgroundColor: ivory,
+        builder: (sheetContext) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Add a memory',
+                  style: Theme.of(sheetContext).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xFFFFE4D4),
+                    child: Icon(
+                      Icons.camera_alt_rounded,
+                      color: Color(0xFF9A503E),
+                    ),
+                  ),
+                  title: const Text('Take a photo'),
+                  subtitle: const Text(
+                    'Open your camera and capture this moment',
+                  ),
+                  onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xFFFFE4D4),
+                    child: Icon(
+                      Icons.photo_library_rounded,
+                      color: Color(0xFF9A503E),
+                    ),
+                  ),
+                  title: const Text('Choose from phone'),
+                  subtitle: const Text('Select one or more photos'),
+                  onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+                ),
+              ],
+            ),
+          ),
         ),
       );
-      if (caption == null || !mounted) return;
-      final path = await savePickedPhoto(image, folderName: 'couple_memories');
-      if (!mounted) return;
-      await store.addMemory(path, caption);
+      if (source == null || !mounted) return;
+      final images = await _pickMemoryImages(source);
+      if (images.isEmpty || !mounted) return;
+      final details = await showDialog<_MemoryDetails>(
+        context: context,
+        builder: (_) => _MemoryDetailsDialog(
+          memories: store.memories,
+          initialDate: _selectedMemoryDate,
+        ),
+      );
+      if (details == null || !mounted) return;
+      await _saveMemoryImages(images, details);
     } catch (_) {
       _notice('Could not add that photo. Check photo access and try again.');
     } finally {
       if (mounted) setState(() => _picking = false);
     }
+  }
+
+  Future<List<XFile>> _pickMemoryImages(ImageSource source) async {
+    final picker = ImagePicker();
+    if (source == ImageSource.camera) {
+      final image = await picker.pickImage(
+        source: source,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 85,
+      );
+      return image == null ? const [] : [image];
+    }
+    return picker.pickMultiImage(
+      maxWidth: 1600,
+      maxHeight: 1600,
+      imageQuality: 85,
+    );
+  }
+
+  Future<void> _saveMemoryImages(
+    List<XFile> images,
+    _MemoryDetails details,
+  ) async {
+    final cloudStore = store is CloudCoupleStore
+        ? store as CloudCoupleStore
+        : null;
+    final autoTag = store.online;
+    if (autoTag && cloudStore != null) cloudStore.memoryTagNotice = null;
+    for (final image in images) {
+      final path = await savePickedPhoto(image, folderName: 'couple_memories');
+      if (!mounted) return;
+      await store.addMemory(
+        path,
+        details.caption,
+        album: details.album,
+        memoryDate: details.date,
+        aiTags: autoTag,
+      );
+    }
+    if (autoTag && cloudStore?.memoryTagNotice != null) {
+      _notice(cloudStore!.memoryTagNotice!);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _addPhotosToAlbum(
+    DateTime date,
+    String albumName,
+  ) async {
+    if (_picking) return const [];
+    setState(() => _picking = true);
+    try {
+      final source = await showModalBottomSheet<ImageSource>(
+        context: context,
+        showDragHandle: true,
+        backgroundColor: ivory,
+        builder: (sheetContext) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.camera_alt_rounded),
+                title: const Text('Take a photo'),
+                onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_rounded),
+                title: const Text('Choose from phone'),
+                onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (source == null || !mounted) return const [];
+      final images = await _pickMemoryImages(source);
+      if (images.isEmpty || !mounted) return const [];
+      final caption = await showDialog<String>(
+        context: context,
+        builder: (_) => const _TextDialog(
+          title: 'Add to album',
+          label: 'Caption (optional)',
+          description: 'These photos will be added to this album.',
+          action: 'Add photos',
+          allowEmpty: true,
+        ),
+      );
+      if (caption == null || !mounted) return const [];
+      await _saveMemoryImages(
+        images,
+        _MemoryDetails(caption: caption, album: albumName, date: date),
+      );
+      return store.memories.where((memory) {
+        final savedAlbum = (memory['album'] as String? ?? '').trim();
+        final visibleAlbum = savedAlbum.isNotEmpty
+            ? savedAlbum
+            : (memory['caption'] as String? ?? '').trim();
+        return DateUtils.isSameDay(_memoryDate(memory), date) &&
+            visibleAlbum.toLowerCase() == albumName.trim().toLowerCase();
+      }).toList();
+    } catch (error) {
+      _notice(error.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+    return const [];
   }
 
   Future<void> _date() async {
@@ -700,115 +860,199 @@ class _CoupleHomeState extends State<CoupleHome> {
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: store,
-    builder: (context, _) => Container(
-      decoration: _tab == 1
-          ? const BoxDecoration(
-              image: DecorationImage(
-                image: AssetImage(
-                  'assets/branding/dreamy_peach_gradient_waves.png',
+    builder: (context, _) => PopScope(
+      canPop: _tab != 1 && _tab != 4,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && (_tab == 1 || _tab == 4)) setState(() => _tab = 0);
+      },
+      child: Container(
+        decoration: _tab == 1
+            ? const BoxDecoration(
+                color: Color(0xFFFCF8F6),
+                image: DecorationImage(
+                  image: AssetImage('assets/branding/metherapy_soft_waves.png'),
+                  fit: BoxFit.cover,
                 ),
-                fit: BoxFit.cover,
+              )
+            : null,
+        child: Scaffold(
+          backgroundColor: _tab == 1 ? Colors.transparent : null,
+          extendBody: _tab == 0 || _tab == 2,
+          appBar: _tab == 1 || _tab == 4
+              ? AppBar(
+                  backgroundColor: Colors.transparent,
+                  surfaceTintColor: Colors.transparent,
+                  elevation: 0,
+                  title: _tab == 4 ? _partnerChatHeader() : null,
+                  leading: IconButton(
+                    tooltip: MaterialLocalizations.of(context)
+                        .backButtonTooltip,
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () => setState(() => _tab = 0),
+                  ),
+                )
+              : null,
+          bottomNavigationBar: _tab == 1 || _tab == 4
+              ? null
+              : CoupleDock(
+                  selected: _tab,
+                  onSelected: (index) => setState(() => _tab = index),
+                ),
+          body: Stack(
+            children: [
+              Offstage(
+                offstage: _tab != 0,
+                child: store is CloudCoupleStore
+                    ? LiveCoupleMap(
+                        store: store as CloudCoupleStore,
+                        onProfile: _profile,
+                        onDate: _date,
+                        onAvatar: _uploadAvatar,
+                        onNotifications: _notifications,
+                      )
+                    : CoupleMap(
+                        yourName: store.yourName,
+                        partnerName: store.partnerName,
+                        startedOn: store.relationshipStart,
+                        onProfile: _profile,
+                        onDate: _date,
+                        onNotifications: _notifications,
+                      ),
               ),
-            )
-          : null,
-      child: Scaffold(
-        backgroundColor: _tab == 1 ? Colors.transparent : null,
-        extendBody: _tab == 0 || _tab == 2,
-        appBar: null,
-        bottomNavigationBar: CoupleDock(
-          selected: _tab,
-          onSelected: (index) => setState(() => _tab = index),
-        ),
-        body: Stack(
-          children: [
-            Offstage(
-              offstage: _tab != 0,
-              child: store is CloudCoupleStore
-                  ? LiveCoupleMap(
-                      store: store as CloudCoupleStore,
-                      onProfile: _profile,
-                      onDate: _date,
-                      onAvatar: _uploadAvatar,
-                      onNotifications: _notifications,
-                    )
-                  : CoupleMap(
-                      yourName: store.yourName,
-                      partnerName: store.partnerName,
-                      startedOn: store.relationshipStart,
-                      onProfile: _profile,
-                      onDate: _date,
-                      onNotifications: _notifications,
-                    ),
-            ),
-            if (_tab != 0)
-              _tab == 2
-                  ? CameraCaptureScreen(
-                      store: store,
-                      onClose: () => setState(() => _tab = 0),
-                    )
-                  : SafeArea(
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 720),
-                          child: Column(
-                            children: [
-                              if (!store.online)
-                                Container(
-                                  width: double.infinity,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 9,
-                                  ),
-                                  color: const Color(0xFFFFEADB),
-                                  child: Text(
-                                    tr(
-                                      'LOCAL PREVIEW · No account or partner connection yet',
+              if (_tab != 0)
+                _tab == 2
+                    ? CameraCaptureScreen(
+                        store: store,
+                        onClose: () => setState(() => _tab = 0),
+                      )
+                    : SafeArea(
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 720),
+                            child: Column(
+                              children: [
+                                if (!store.online)
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 9,
                                     ),
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: slate,
+                                    color: const Color(0xFFFFEADB),
+                                    child: Text(
+                                      tr(
+                                        'LOCAL PREVIEW · No account or partner connection yet',
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: slate,
+                                      ),
                                     ),
                                   ),
+                                if (store.storageError != null)
+                                  Padding(
+                                    padding: const EdgeInsets.all(8),
+                                    child: Text(
+                                      store.storageError!,
+                                      style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                      ),
+                                    ),
+                                  ),
+                                Expanded(
+                                  child: switch (_tab) {
+                                    1 => _court(),
+                                    3 => _memories(),
+                                    4 =>
+                                      store is CloudCoupleStore
+                                          ? RoomChat(
+                                              store: store as CloudCoupleStore,
+                                              onAttach: _attachChatPhoto,
+                                              onInvite: _summon,
+                                              sessionBuilder: _summonsCard,
+                                            )
+                                          : _chat(),
+                                    _ => _home(),
+                                  },
                                 ),
-                              if (store.storageError != null)
-                                Padding(
-                                  padding: const EdgeInsets.all(8),
-                                  child: Text(
-                                    store.storageError!,
-                                    style: TextStyle(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .error,
-                                    ),
-                                  ),
-                                ),
-                              Expanded(
-                                child: switch (_tab) {
-                                  1 => _court(),
-                                  3 => _memories(),
-                                  4 =>
-                                    store is CloudCoupleStore
-                                        ? RoomChat(
-                                            store: store as CloudCoupleStore,
-                                            onAttach: _attachChatPhoto,
-                                            onInvite: _summon,
-                                            sessionBuilder: _summonsCard,
-                                          )
-                                        : _chat(),
-                                  _ => _home(),
-                                },
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
-          ],
+            ],
+          ),
         ),
       ),
     ),
   );
+  Widget _partnerChatHeader() {
+    final cloud = store is CloudCoupleStore ? store as CloudCoupleStore : null;
+    final status = cloud?.partnerDeviceStatus;
+    final updated = DateTime.tryParse(status?['updatedAt'] as String? ?? '');
+    final fresh =
+        updated != null && DateTime.now().difference(updated).inMinutes < 3;
+    final details = !fresh
+        ? 'Device status unavailable'
+        : [
+            if (status?['battery'] is int) "${status!['battery']}% battery",
+            if (status?['charging'] == true) 'Charging',
+            switch (status?['connection']) {
+              'wifi' => 'Wi-Fi',
+              'mobile' => 'Mobile data',
+              'offline' => 'Offline',
+              _ => 'Connection unknown',
+            },
+          ].join(' · ');
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 19,
+          backgroundColor: const Color(0xFFE9A493),
+          child: cloud?.partnerAvatarPath == null
+              ? Text(
+                  store.partnerName.trim().isEmpty
+                      ? '?'
+                      : store.partnerName.trim().characters.first.toUpperCase(),
+                )
+              : ClipOval(
+                  child: photoImage(
+                    cloud!.partnerAvatarPath!,
+                    width: 38,
+                    height: 38,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                store.partnerName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                details,
+                maxLines: 2,
+                style: const TextStyle(fontSize: 11, color: Color(0xFF756A66)),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _heading(String title, String subtitle) => Padding(
     padding: const EdgeInsets.only(bottom: 24),
     child: Column(
@@ -1121,52 +1365,636 @@ class _CoupleHomeState extends State<CoupleHome> {
     ),
   );
 
-  Widget _memories() => ListView(
-    padding: const EdgeInsets.all(24),
-    children: [
-      _heading(
-        'The little things, kept.',
-        'A place for photos and moments you love.',
-      ),
-      FilledButton.icon(
-        onPressed: _picking ? null : _addMemory,
-        icon: const Icon(Icons.add_photo_alternate_outlined),
-        label: Text(_picking ? tr('Adding photo…') : tr('Add a memory')),
-      ),
-      const SizedBox(height: 20),
-      if (store.memories.isEmpty)
-        _card(
-          Icons.photo_camera_outlined,
-          'Your first memory is waiting.',
-          'Choose a photo and add a caption to your shared album.',
+  bool _indexingPhotos = false;
+  Future<void> _indexPhotos() async {
+    if (_indexingPhotos || store is! CloudCoupleStore) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Search inside your photos'),
+        content: const Text(
+          'Send unindexed memory photos to Meta to identify visible objects such as cats, flowers and cars. Tags can be imperfect. Up to 20 photos can be indexed per day.',
         ),
-      for (final memory in store.memories)
-        Card(
-          clipBehavior: Clip.antiAlias,
-          margin: const EdgeInsets.only(bottom: 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              photoImage(
-                memory['path'] as String,
-                height: 280,
-                fit: BoxFit.cover,
-                errorBuilder: (_, error, stack) => SizedBox(
-                  height: 160,
-                  child: Center(
-                    child: Text(tr('Photo unavailable on this device')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Analyze photos'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    setState(() => _indexingPhotos = true);
+    final cloud = store as CloudCoupleStore;
+    try {
+      final pending = List<Map<String, dynamic>>.from(
+        store.memories.where((m) => m['visualTagsVersion'] != 2),
+      );
+      for (final memory in pending) {
+        await cloud.tagMemory(
+          memory['id'] as String,
+          memory['photoId'] as String,
+        );
+      }
+    } catch (_) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Some photos could not be analyzed. Retry later; completed tags are saved.',
+            ),
+          ),
+        );
+    } finally {
+      await cloud.refresh();
+      if (mounted) setState(() => _indexingPhotos = false);
+    }
+  }
+
+  Widget _memories() {
+    final query = _memorySearch.text.trim().toLowerCase();
+    final results = store.memories.where((memory) {
+      String normalize(String value) => value
+          .toLowerCase()
+          .replaceAll(RegExp(r'[^a-z0-9\u00C0-\uFFFF]+'), ' ')
+          .trim();
+      final haystack = normalize(
+        [
+          memory['caption'],
+          memory['text'],
+          memory['album'],
+          ...(memory['tags'] as List? ?? const []),
+        ].whereType<String>().join(' '),
+      );
+      final words = normalize(query)
+          .split(' ')
+          .where((word) => word.isNotEmpty);
+      final matchesQuery = query.isEmpty || words.every(haystack.contains);
+      final matchesDate =
+          _selectedMemoryDate == null ||
+          DateUtils.isSameDay(_memoryDate(memory), _selectedMemoryDate);
+      return matchesQuery && matchesDate;
+    }).toList();
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        _heading(
+          'The little things, kept.',
+          'A place for photos and moments you love.',
+        ),
+        FilledButton.icon(
+          onPressed: _picking ? null : _addMemory,
+          icon: Icon(
+            _picking ? Icons.hourglass_top_rounded : Icons.add_a_photo_rounded,
+          ),
+          label: Text(_picking ? 'Saving memory…' : 'Add a memory'),
+        ),
+        if (store.online)
+          Padding(
+            padding: const EdgeInsets.only(top: 8, left: 4),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.auto_awesome_rounded,
+                  size: 15,
+                  color: Color(0xFF9A503E),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Search captions and albums, plus objects and readable labels identified in photos.',
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(color: const Color(0xFF80665D)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (store.online)
+          TextButton.icon(
+            onPressed: _indexingPhotos ? null : _indexPhotos,
+            icon: const Icon(Icons.image_search),
+            label: Text(
+              _indexingPhotos
+                  ? 'Analyzing photos…'
+                  : 'Update photo search index',
+            ),
+          ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _memorySearch,
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            hintText: 'Search captions, albums or objects in photos',
+            prefixIcon: const Icon(Icons.search_rounded),
+            suffixIcon: _memorySearch.text.isEmpty
+                ? null
+                : IconButton(
+                    onPressed: () {
+                      _memorySearch.clear();
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+            filled: true,
+            fillColor: Colors.white,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(18),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+        _memoryCalendar(),
+        const SizedBox(height: 16),
+        if (store.memories.isEmpty)
+          _card(
+            Icons.photo_camera_outlined,
+            'Your first memory is waiting.',
+            'Choose a photo and add a caption to your shared album.',
+          ),
+        if (store.memories.isNotEmpty && results.isEmpty)
+          _card(
+            Icons.search_off_rounded,
+            'No matching memories',
+            'Try another word or add a caption or photo tag.',
+          ),
+        ..._memoryTimeline(results),
+      ],
+    );
+  }
+
+  DateTime _memoryDate(Map<String, dynamic> memory) {
+    final raw =
+        memory['memoryDate'] as String? ?? memory['createdAt'] as String?;
+    return DateUtils.dateOnly(
+      DateTime.tryParse(raw ?? '')?.toLocal() ?? DateTime.now(),
+    );
+  }
+
+  Widget _memoryCalendar() {
+    final firstDay = DateTime(_calendarMonth.year, _calendarMonth.month, 1);
+    final leadingDays = firstDay.weekday - DateTime.monday;
+    final daysInMonth = DateUtils.getDaysInMonth(
+      _calendarMonth.year,
+      _calendarMonth.month,
+    );
+    final cellCount = ((leadingDays + daysInMonth + 6) ~/ 7) * 7;
+    final memoryCovers = <int, Map<String, dynamic>>{};
+    for (final memory in store.memories) {
+      final date = _memoryDate(memory);
+      if (date.year == _calendarMonth.year &&
+          date.month == _calendarMonth.month) {
+        memoryCovers.putIfAbsent(date.day, () => memory);
+      }
+    }
+    final selectedDateMemories = _selectedMemoryDate == null
+        ? <Map<String, dynamic>>[]
+        : store.memories
+              .where(
+                (memory) => DateUtils.isSameDay(
+                  _memoryDate(memory),
+                  _selectedMemoryDate,
+                ),
+              )
+              .toList();
+    final selectedDateAlbums = _albumsForDate(selectedDateMemories);
+    return Card(
+      color: Colors.white,
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  tooltip: 'Previous month',
+                  onPressed: () => setState(() {
+                    _calendarMonth = DateTime(
+                      _calendarMonth.year,
+                      _calendarMonth.month - 1,
+                      1,
+                    );
+                    _selectedMemoryDate = null;
+                  }),
+                  icon: const Icon(Icons.chevron_left_rounded),
+                ),
+                Expanded(
+                  child: Text(
+                    '${_monthName(_calendarMonth.month)} ${_calendarMonth.year}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 17,
+                      color: Color(0xFF542819),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Next month',
+                  onPressed: () => setState(() {
+                    _calendarMonth = DateTime(
+                      _calendarMonth.year,
+                      _calendarMonth.month + 1,
+                      1,
+                    );
+                    _selectedMemoryDate = null;
+                  }),
+                  icon: const Icon(Icons.chevron_right_rounded),
+                ),
+                TextButton(
+                  onPressed: _selectedMemoryDate == null
+                      ? null
+                      : () => setState(() => _selectedMemoryDate = null),
+                  child: const Text('All dates'),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                for (final label in const ['M', 'T', 'W', 'T', 'F', 'S', 'S'])
+                  Expanded(
+                    child: Center(
+                      child: Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF80665D),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: cellCount,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 7,
+                mainAxisExtent: 42,
+              ),
+              itemBuilder: (context, index) {
+                final day = index - leadingDays + 1;
+                if (day < 1 || day > daysInMonth) {
+                  return const SizedBox.shrink();
+                }
+                final date = DateTime(
+                  _calendarMonth.year,
+                  _calendarMonth.month,
+                  day,
+                );
+                final selected = DateUtils.isSameDay(date, _selectedMemoryDate);
+                final cover = memoryCovers[day];
+                final hasMemories = cover != null;
+                return InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => setState(() => _selectedMemoryDate = date),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: selected || hasMemories
+                              ? const Color(0xFFF2CDBB)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(10),
+                          border: selected
+                              ? Border.all(
+                                  color: const Color(0xFFB85F41),
+                                  width: 2,
+                                )
+                              : null,
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            if (cover != null)
+                              photoImage(
+                                cover['path'] as String,
+                                fit: BoxFit.cover,
+                              ),
+                            Center(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: cover == null
+                                      ? Colors.transparent
+                                      : Colors.black.withValues(alpha: .42),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  '$day',
+                                  style: TextStyle(
+                                    color: cover == null
+                                        ? const Color(0xFF542819)
+                                        : Colors.white,
+                                    fontWeight: selected || hasMemories
+                                        ? FontWeight.w700
+                                        : FontWeight.normal,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            if (selectedDateAlbums.isNotEmpty) ...[
+              const Divider(height: 18),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    'Albums on ${_selectedMemoryDate!.day} ${_monthName(_selectedMemoryDate!.month)}',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(memory['caption'] as String),
+              const SizedBox(height: 4),
+              SizedBox(
+                height: selectedDateAlbums.length.clamp(1, 3).toDouble() * 68,
+                child: ListView.separated(
+                  itemCount: selectedDateAlbums.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 2),
+                  itemBuilder: (context, index) {
+                    final album = selectedDateAlbums[index];
+                    final items = album['items'] as List<Map<String, dynamic>>;
+                    return ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: photoImage(
+                          items.first['path'] as String,
+                          width: 42,
+                          height: 42,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      title: Text(
+                        album['name'] as String,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${items.length} ${items.length == 1 ? 'photo' : 'photos'}',
+                      ),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () =>
+                          _openMemoryAlbum(album, _selectedMemoryDate!),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openMemoryAlbum(Map<String, dynamic> album, DateTime date) {
+    // Search may show only some photos; opening an album always loads all of it.
+    final completeAlbum =
+        _albumsForDate(
+          store.memories
+              .where((memory) => _memoryDate(memory) == date)
+              .toList(),
+        ).firstWhere(
+          (entry) => (entry['items'] as List).any(
+            (memory) => memory['id'] == (album['items'] as List).first['id'],
+          ),
+          orElse: () => album,
+        );
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _MemoryAlbumPage(
+          title: album['name'] as String,
+          date: date,
+          memories: List<Map<String, dynamic>>.from(
+            completeAlbum['items'] as List,
+          ),
+          onAddPhotos: () => _addPhotosToAlbum(date, album['name'] as String),
+          onDelete: store.deleteMemories,
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _memoryTimeline(List<Map<String, dynamic>> memories) {
+    final grouped = <DateTime, List<Map<String, dynamic>>>{};
+    for (final memory in memories) {
+      grouped.putIfAbsent(_memoryDate(memory), () => []).add(memory);
+    }
+    final dates = grouped.keys.toList()..sort((a, b) => b.compareTo(a));
+    return [
+      for (final date in dates)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 58,
+                child: Column(
+                  children: [
+                    Text(
+                      '${date.day}',
+                      style: const TextStyle(
+                        fontSize: 21,
+                        height: 1.1,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF542819),
+                      ),
+                    ),
+                    Text(
+                      _monthName(date.month),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF80665D),
+                      ),
+                    ),
+                    Container(
+                      width: 2,
+                      height: 28,
+                      margin: const EdgeInsets.only(top: 5),
+                      color: const Color(0xFFF2CDBB),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  children: [
+                    for (final album in _albumsForDate(grouped[date]!))
+                      _memoryAlbumCard(album, date),
+                  ],
+                ),
               ),
             ],
           ),
         ),
-    ],
-  );
+    ];
+  }
+
+  List<Map<String, dynamic>> _albumsForDate(
+    List<Map<String, dynamic>> memories,
+  ) {
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    for (final memory in memories) {
+      final name = (memory['album'] as String? ?? '').trim();
+      final caption = (memory['caption'] as String? ?? '').trim();
+      final displayName = name.isNotEmpty ? name : caption;
+      final key = displayName.isEmpty
+          ? 'memory:${memory['id'] ?? memory['path']}'
+          : displayName.toLowerCase();
+      grouped.putIfAbsent(key, () => []).add(memory);
+    }
+    return [
+      for (final items in grouped.values)
+        {
+          'name': (items.first['album'] as String? ?? '').trim().isEmpty
+              ? ((items.first['caption'] as String? ?? '').trim().isEmpty
+                    ? 'Memory'
+                    : items.first['caption'])
+              : items.first['album'],
+          'items': items,
+        },
+    ];
+  }
+
+  Widget _memoryAlbumCard(Map<String, dynamic> album, DateTime date) {
+    final items = List<Map<String, dynamic>>.from(album['items'] as List);
+    final first = items.first;
+    final people = items
+        .map((item) => item['addedBy'] as String? ?? '')
+        .where((name) => name.isNotEmpty)
+        .toSet()
+        .join(' · ');
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: InkWell(
+        onTap: () => _openMemoryAlbum(album, date),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Stack(
+              children: [
+                photoImage(
+                  first['path'] as String,
+                  height: 178,
+                  fit: BoxFit.cover,
+                ),
+                Positioned(
+                  right: 10,
+                  bottom: 10,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: .62),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.photo_library_outlined,
+                            size: 15,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            '${items.length}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    album['name'] as String,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF542819),
+                    ),
+                  ),
+                  if (people.isNotEmpty)
+                    Text(
+                      people,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF80665D),
+                      ),
+                    ),
+                  Text(
+                    '${date.day} ${_monthName(date.month)} ${date.year} · ${items.length} ${items.length == 1 ? 'photo' : 'photos'}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF80665D),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _monthName(int month) => const [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ][month - 1];
 
   Future<void> _showAllSessions(
     List<Map<String, dynamic>> cases,
@@ -1352,7 +2180,7 @@ class _CoupleHomeState extends State<CoupleHome> {
                       ShaderMask(
                         blendMode: BlendMode.srcIn,
                         shaderCallback: (bounds) => const LinearGradient(
-                          colors: [Color(0xFFFFB17E), Color(0xFFF44F86)],
+                          colors: [Color(0xFFF5C6B0), Color(0xFFDF95A2)],
                         ).createShader(bounds),
                         child: const Icon(
                           Icons.favorite_rounded,
@@ -1398,18 +2226,13 @@ class _CoupleHomeState extends State<CoupleHome> {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  SizedBox(
-                    height: (MediaQuery.sizeOf(context).height * .12).clamp(
-                      60.0,
-                      150.0,
-                    ),
-                  ),
+                  const SizedBox(height: 24),
                   SizedBox(
                     width: double.infinity,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
-                          colors: [Color(0xFFFFB77F), Color(0xFFF34D86)],
+                          colors: [Color(0xFFF5C6B0), Color(0xFFDF95A2)],
                         ),
                         borderRadius: BorderRadius.circular(36),
                         boxShadow: const [
@@ -1589,6 +2412,388 @@ class _ProfileDialogState extends State<_ProfileDialog> {
         child: Text(tr('Save names')),
       ),
     ],
+  );
+}
+
+class _MemoryDetails {
+  const _MemoryDetails({
+    required this.caption,
+    required this.album,
+    required this.date,
+  });
+  final String caption, album;
+  final DateTime date;
+}
+
+class _MemoryDetailsDialog extends StatefulWidget {
+  const _MemoryDetailsDialog({required this.memories, this.initialDate});
+  final List<Map<String, dynamic>> memories;
+  final DateTime? initialDate;
+  @override
+  State<_MemoryDetailsDialog> createState() => _MemoryDetailsDialogState();
+}
+
+class _MemoryDetailsDialogState extends State<_MemoryDetailsDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _caption = TextEditingController();
+  final _album = TextEditingController();
+  late DateTime _date = DateUtils.dateOnly(
+    widget.initialDate ?? DateTime.now(),
+  );
+  String? _selectedAlbum;
+  @override
+  void initState() {
+    super.initState();
+  }
+
+  List<String> get _albums =>
+      widget.memories
+          .where((memory) {
+            final raw =
+                memory['memoryDate'] as String? ??
+                memory['createdAt'] as String?;
+            final savedDate = DateUtils.dateOnly(
+              DateTime.tryParse(raw ?? '')?.toLocal() ?? DateTime.now(),
+            );
+            return DateUtils.isSameDay(savedDate, _date);
+          })
+          .map((memory) {
+            final album = (memory['album'] as String? ?? '').trim();
+            return album.isNotEmpty
+                ? album
+                : (memory['caption'] as String? ?? '').trim();
+          })
+          .where((name) => name.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  @override
+  void dispose() {
+    _caption.dispose();
+    _album.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
+    insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+    title: const Text('Create a memory'),
+    content: Form(
+      key: _formKey,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.calendar_month_rounded),
+              title: const Text('Memory date'),
+              subtitle: Text(
+                '${_date.day} ${const ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][_date.month - 1]} ${_date.year}',
+              ),
+              onTap: () async {
+                final selected = await showDatePicker(
+                  context: context,
+                  initialDate: _date,
+                  firstDate: DateTime(1900),
+                  lastDate: DateTime.now(),
+                );
+                if (selected != null) {
+                  setState(() {
+                    _date = DateUtils.dateOnly(selected);
+                    if (!_albums.contains(_selectedAlbum)) {
+                      _selectedAlbum = null;
+                    }
+                  });
+                }
+              },
+            ),
+            DropdownButtonFormField<String>(
+              initialValue: _selectedAlbum ?? '',
+              decoration: const InputDecoration(labelText: 'Album name'),
+              items: [
+                const DropdownMenuItem(
+                  value: '',
+                  child: Text('Create a new album'),
+                ),
+                for (final album in _albums)
+                  DropdownMenuItem(
+                    value: album,
+                    child: Text(album, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: (value) => setState(
+                () => _selectedAlbum = value == null || value.isEmpty
+                    ? null
+                    : value,
+              ),
+            ),
+            if (_selectedAlbum == null || _selectedAlbum!.isEmpty)
+              TextFormField(
+                controller: _album,
+                maxLength: 80,
+                decoration: const InputDecoration(
+                  labelText: 'New album name',
+                  hintText: 'Weekend in the city',
+                ),
+                validator: (value) =>
+                    (_selectedAlbum == null || _selectedAlbum!.isEmpty) &&
+                        (value == null || value.trim().isEmpty)
+                    ? 'Choose an album or enter a new name.'
+                    : null,
+              ),
+            TextFormField(
+              controller: _caption,
+              maxLength: 1000,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Caption (optional)',
+                hintText: 'A moment worth keeping',
+              ),
+            ),
+            const Text(
+              'Choose an album from this date, or enter a name to create one.',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () {
+          if (!_formKey.currentState!.validate()) return;
+          Navigator.pop(
+            context,
+            _MemoryDetails(
+              caption: _caption.text.trim(),
+              album: _selectedAlbum ?? _album.text.trim(),
+              date: _date,
+            ),
+          );
+        },
+        child: const Text('Continue'),
+      ),
+    ],
+  );
+}
+
+class _MemoryAlbumPage extends StatefulWidget {
+  const _MemoryAlbumPage({
+    required this.title,
+    required this.date,
+    required this.memories,
+    required this.onAddPhotos,
+    required this.onDelete,
+  });
+
+  final String title;
+  final DateTime date;
+  final List<Map<String, dynamic>> memories;
+  final Future<List<Map<String, dynamic>>> Function() onAddPhotos;
+  final Future<void> Function(List<String>) onDelete;
+
+  @override
+  State<_MemoryAlbumPage> createState() => _MemoryAlbumPageState();
+}
+
+class _MemoryAlbumPageState extends State<_MemoryAlbumPage> {
+  late List<Map<String, dynamic>> _memories = List.of(widget.memories);
+  bool _busy = false;
+
+  Future<void> _deletePhoto(Map<String, dynamic> memory) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete this photo?'),
+        content: const Text(
+          'Remove this photo from shared Memories for both partners? The original on your phone stays.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete photo'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onDelete([memory['id'] as String]);
+      if (mounted)
+        setState(() => _memories.removeWhere((m) => m['id'] == memory['id']));
+    } catch (_) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not delete the photo. Please retry.'),
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _deleteAlbum() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete album?'),
+        content: Text(
+          'Delete "${widget.title}" and all ${_memories.length} photos in this album from shared Memories? This cannot be undone. Photos on your device will stay.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete album'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onDelete(
+        _memories.map((memory) => memory['id'] as String).toList(),
+      );
+      if (mounted) Navigator.pop(context);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', '')),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _addPhotos() async {
+    setState(() => _busy = true);
+    try {
+      final updated = await widget.onAddPhotos();
+      if (!mounted) return;
+      if (updated.isNotEmpty) setState(() => _memories = updated);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: const Color(0xFFFFF9F3),
+    appBar: AppBar(
+      backgroundColor: const Color(0xFFFFF9F3),
+      title: Text(widget.title),
+      actions: [
+        IconButton(
+          tooltip: 'Add photos',
+          onPressed: _busy ? null : _addPhotos,
+          icon: const Icon(Icons.add_photo_alternate_outlined),
+        ),
+        IconButton(
+          tooltip: 'Delete album',
+          onPressed: _busy ? null : _deleteAlbum,
+          icon: const Icon(Icons.delete_outline),
+        ),
+      ],
+    ),
+    body: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 14),
+          child: Text(
+            '${widget.date.day} ${const ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][widget.date.month - 1]} ${widget.date.year} · ${_memories.length} ${_memories.length == 1 ? 'photo' : 'photos'}',
+            style: const TextStyle(color: Color(0xFF80665D)),
+          ),
+        ),
+        Expanded(
+          child: GridView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            itemCount: _memories.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+              childAspectRatio: .76,
+            ),
+            itemBuilder: (context, index) {
+              final memory = _memories[index];
+              final path = memory['path'] as String;
+              return Card(
+                clipBehavior: Clip.antiAlias,
+                margin: EdgeInsets.zero,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: InkWell(
+                  onTap: () => showDialog<void>(
+                    context: context,
+                    builder: (context) => Dialog(
+                      clipBehavior: Clip.antiAlias,
+                      child: InteractiveViewer(
+                        child: photoImage(path, fit: BoxFit.contain),
+                      ),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            photoImage(path, fit: BoxFit.cover),
+                            Positioned(
+                              top: 4,
+                              right: 4,
+                              child: IconButton.filled(
+                                tooltip: 'Delete photo',
+                                onPressed: _busy
+                                    ? null
+                                    : () => _deletePhoto(memory),
+                                icon: const Icon(Icons.delete_outline),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Text(
+                          memory['caption'] as String? ?? '',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    ),
   );
 }
 

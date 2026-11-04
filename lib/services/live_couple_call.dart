@@ -32,6 +32,7 @@ class LiveCoupleCall extends ChangeNotifier {
 
   bool get joined =>
       callId != null && status != 'ended' && status != 'not_started';
+  String? get microphoneTrackId => _local?.getAudioTracks().firstOrNull?.id;
   bool get connected => status == 'connected';
   bool get waiting => status == 'waiting' || status == 'connecting';
 
@@ -41,6 +42,7 @@ class LiveCoupleCall extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
+      _lastReadyReport = null;
       _remoteDescriptionSet = false;
       _manualMuted = false;
       _turnAllowed = false;
@@ -48,7 +50,11 @@ class LiveCoupleCall extends ChangeNotifier {
       _pendingCandidates.clear();
       final joinedCall = await store.callSignal(
         caseId,
-        body: const {'operation': 'join'},
+        body: const {
+          'operation': 'join',
+          'aiConsent': true,
+          'audioConsent': true,
+        },
       );
       callId = joinedCall['callId'] as String;
       _initiator = joinedCall['startedBy'] == store.uid;
@@ -63,9 +69,12 @@ class LiveCoupleCall extends ChangeNotifier {
       _peer = await createPeerConnection(configuration);
       _peer!.onConnectionState = (state) {
         final stateName = state.toString().toLowerCase();
-        if (stateName.contains('connected')) {
+        if (stateName.contains('disconnected')) {
+          status = 'connecting';
+        } else if (stateName.contains('connected')) {
           status = 'connected';
           error = null;
+          unawaited(_reportReady());
         } else if (stateName.contains('failed')) {
           status = 'failed';
           error = 'The phones could not connect directly. Try the same Wi-Fi or a different network.';
@@ -138,7 +147,7 @@ class LiveCoupleCall extends ChangeNotifier {
   }
 
   void _applyMute() {
-    muted = !_turnAllowed || _manualMuted || !joined;
+    muted = !_turnAllowed || _manualMuted || !connected;
     for (final track
         in _local?.getAudioTracks() ?? const <MediaStreamTrack>[]) {
       track.enabled = !muted;
@@ -187,10 +196,29 @@ class LiveCoupleCall extends ChangeNotifier {
     }
   }
 
+  DateTime? _lastReadyReport;
+
+  Future<void> _reportReady() async {
+    if (_lastReadyReport != null &&
+        DateTime.now().difference(_lastReadyReport!).inSeconds < 6)
+      return;
+    if (!connected || callId == null || _closed) return;
+    try {
+      await store.callSignal(
+        caseId,
+        body: {'operation': 'ready', 'callId': callId},
+      );
+      _lastReadyReport = DateTime.now();
+    } catch (_) {
+      /* Retry with the next call heartbeat. */
+    }
+  }
+
   Future<void> _sync() async {
     if (_closed || callId == null || _working) return;
     _working = true;
     try {
+      if (connected) await _reportReady();
       final data = await store.callSignal(caseId, after: _lastSignal);
       if (_closed) return;
       if (data['callId'] != callId) {

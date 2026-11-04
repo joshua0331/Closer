@@ -6,3 +6,5 @@ google-cloud-storage>=2.19,<4
 firebase-admin>=7.5,<8
 requests>=2.32,<3
 cachecontrol>=0.14,<1
+
+websockets>=15,<16

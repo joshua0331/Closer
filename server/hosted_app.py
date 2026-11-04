@@ -9,7 +9,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from urllib.error import HTTPError, URLError
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
@@ -184,6 +184,59 @@ def make_app(records=None, api_key=None, model=None, clock=None):
         except Exception:
             return reply(503, {'error': 'Could not sync your shared space. Please try again.'})
 
+    @app.post('/couple/chat-suggestions')
+    async def chat_suggestions(request: Request):
+        reservation = None
+        access = None
+        try:
+            header = request.headers.get('authorization', '')
+            if not header.startswith('Bearer '):
+                raise AccessError(401, 'Sign in to Closer.')
+            body = await read_json(request, 1024)
+            if not isinstance(body, dict) or body.get('consent') is not True:
+                raise AccessError(400, 'Allow recent chat text to be shared with Meta first.')
+            data = couple_data()
+            uid = await run_in_threadpool(data.user, header[7:])
+            await run_in_threadpool(data.admit, uid, False, True)
+            cid, _ = await run_in_threadpool(data.member, uid)
+            from account_access import AccountAccess
+            from chat_suggestions import suggest
+            access = AccountAccess(app.state.security.records, uid, cid)
+            reservation = await run_in_threadpool(access.reserve, '', 'hearing', request.headers.get('x-request-id', ''), 'chat-suggestions')
+            state = await run_in_threadpool(data.state, uid)
+            result = await run_in_threadpool(suggest, state, uid, app.state.meta_key, app.state.meta_model)
+            return reply(200, result)
+        except AccessError as error:
+            return reply(error.status, {'error': error.message})
+        except Exception:
+            return reply(502, {'error': 'Meta could not suggest replies. Please try again.'})
+        finally:
+            if reservation is not None:
+                await run_in_threadpool(access.finish, reservation)
+
+    @app.post('/couple/memory-tags')
+    async def memory_tags(request: Request):
+        try:
+            header = request.headers.get('authorization', '')
+            if not header.startswith('Bearer '):
+                raise AccessError(401, 'Sign in to Closer.')
+            data = couple_data()
+            uid = await run_in_threadpool(data.user, header[7:])
+            await run_in_threadpool(data.admit, uid, False, True)
+            body = await read_json(request, 1024)
+            photo_id = body.get('photoId') if isinstance(body, dict) else None
+            memory_id = body.get('memoryId') if isinstance(body, dict) else None
+            if (not isinstance(photo_id, str) or len(photo_id) != 32 or any(c not in '0123456789abcdef' for c in photo_id)
+                    or not isinstance(memory_id, str) or not memory_id or len(memory_id) > 80
+                    or any(not (c.isalnum() or c in '_-') for c in memory_id)):
+                raise AccessError(400, 'Choose a valid memory photo.')
+            result = await run_in_threadpool(data.tag_memory, uid, memory_id, photo_id, app.state.meta_key, app.state.meta_model)
+            return reply(200, result)
+        except AccessError as error:
+            return reply(error.status, {'error': error.message})
+        except Exception:
+            return reply(502, {'error': 'Muse Spark could not tag this memory. You can still keep and search its caption.'})
+
     @app.get('/couple/court/{case_id}/call')
     @app.post('/couple/court/{case_id}/call')
     async def shared_call(request: Request, case_id: str):
@@ -209,6 +262,11 @@ def make_app(records=None, api_key=None, model=None, clock=None):
             return reply(error.status, {'error': error.message})
         except Exception:
             return reply(503, {'error': 'The voice call could not sync. Your written session is still available.'})
+    @app.websocket('/couple/court/{case_id}/voice')
+    async def live_voice(websocket: WebSocket, case_id: str):
+        from live_transcription import relay
+        await relay(websocket, couple_data, app.state.meta_key, app.state.security.records, case_id)
+
     @app.post('/judge')
     @app.post('/hearing')
     @app.post('/characters')

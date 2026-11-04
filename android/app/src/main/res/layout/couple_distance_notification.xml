@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:background="@android:color/transparent" android:orientation="horizontal" android:gravity="center_vertical" android:padding="4dp">
+  <LinearLayout android:layout_width="58dp" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="center">
+    <ImageView android:id="@+id/distance_you_avatar" android:layout_width="40dp" android:layout_height="40dp" android:contentDescription="Your profile" />
+    <TextView android:id="@+id/distance_you_name" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:maxLines="1" android:ellipsize="end" android:textSize="11sp" android:textStyle="bold" android:textColor="#FFFFFFFF" />
+  </LinearLayout>
+  <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="center" android:paddingHorizontal="4dp">
+    <TextView android:id="@+id/distance_value" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:maxLines="1" android:ellipsize="end" android:textSize="12sp" android:textStyle="bold" android:textColor="#FFFFFFFF" />
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="♡ ┄ ┄ ┄ ┄ ♡" android:textColor="#CB7962" android:textSize="12sp" />
+    <TextView android:id="@+id/distance_anniversary" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:maxLines="1" android:ellipsize="end" android:textSize="11sp" android:textColor="#FFFFFFFF" />
+  </LinearLayout>
+  <LinearLayout android:layout_width="58dp" android:layout_height="wrap_content" android:orientation="vertical" android:gravity="center">
+    <ImageView android:id="@+id/distance_partner_avatar" android:layout_width="40dp" android:layout_height="40dp" android:contentDescription="Partner profile" />
+    <TextView android:id="@+id/distance_partner_name" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:maxLines="1" android:ellipsize="end" android:textSize="11sp" android:textStyle="bold" android:textColor="#FFFFFFFF" />
+  </LinearLayout>
+</LinearLayout>

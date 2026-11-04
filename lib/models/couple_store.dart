@@ -126,13 +126,39 @@ class CoupleStore extends ChangeNotifier {
     return id;
   }
 
-  Future<void> addMemory(String path, String caption) async {
+  Future<void> addMemory(
+    String path,
+    String caption, {
+    String album = '',
+    DateTime? memoryDate,
+    List<String> tags = const [],
+    bool aiTags = false,
+  }) async {
     memories.insert(0, {
+      'id': 'memory_${DateTime.now().microsecondsSinceEpoch}_${_sequence++}',
       'path': path,
       'caption': caption,
       'createdAt': DateTime.now().toIso8601String(),
+      'memoryDate': (memoryDate ?? DateTime.now()).toIso8601String(),
+      'album': album,
+      'tags': tags,
+      'addedBy': yourName.isEmpty ? 'You' : yourName,
     });
     await save();
+  }
+
+  Future<void> deleteMemories(List<String> ids) async {
+    final selected = ids.toSet();
+    final previous = List<Map<String, dynamic>>.of(memories);
+    memories.removeWhere((memory) => selected.contains(memory['id']));
+    await save();
+    if (storageError != null) {
+      memories
+        ..clear()
+        ..addAll(previous);
+      notifyListeners();
+      throw StateError(storageError!);
+    }
   }
 
   Future<void> toggleHeart(String id) {

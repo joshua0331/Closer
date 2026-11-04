@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../localization/closer_localizations.dart';
 import '../services/photo_media.dart';
@@ -43,6 +44,7 @@ class CloudCoupleStore extends CoupleStore {
   Map<String, dynamic>? couple;
   Map<String, dynamic> profile = {};
   String? avatarPath, partnerAvatarPath;
+  String? memoryTagNotice;
   @override
   List<Map<String, dynamic>> get courtHistory => const [];
 
@@ -57,6 +59,30 @@ class CloudCoupleStore extends CoupleStore {
       ?.cast<String>()
       .where((id) => id != uid)
       .firstOrNull;
+
+  DateTime? _lastDeviceSync;
+  Map<String, dynamic>? get partnerDeviceStatus {
+    final value = (couple?['deviceStatuses'] as Map?)?[partnerUid];
+    return value is Map ? Map<String, dynamic>.from(value) : null;
+  }
+
+  Future<void> _syncDeviceStatus() async {
+    if (!Platform.isAndroid || !paired || _closed) return;
+    final now = DateTime.now();
+    if (_lastDeviceSync != null &&
+        now.difference(_lastDeviceSync!).inSeconds < 30)
+      return;
+    _lastDeviceSync = now;
+    try {
+      final value = await const MethodChannel('com.jcm.closer/device_status')
+          .invokeMapMethod<String, dynamic>('read');
+      if (value != null && paired && !_closed) {
+        await action({'action': 'device_status', ...value});
+      }
+    } catch (_) {
+      // Optional telemetry must never interrupt chat or pairing.
+    }
+  }
 
   Future<http.Response> request(
     String path, {
@@ -78,6 +104,8 @@ class CloudCoupleStore extends CoupleStore {
               Duration(
                 seconds: body?['operation'] == 'art'
                     ? 220
+                    : body?['operation'] == 'memory_tags'
+                    ? 65
                     : body?['operation'] == 'review' ||
                           body?['operation'] == 'opening' ||
                           body?['operation'] == 'facilitate'
@@ -195,6 +223,7 @@ class CloudCoupleStore extends CoupleStore {
           preferences.getString(CloserLocaleController.preferenceKey),
         );
       }
+      unawaited(_syncDeviceStatus());
       final avatarIds = Map<String, dynamic>.from(
         couple?['avatars'] as Map? ?? {},
       );
@@ -230,6 +259,7 @@ class CloudCoupleStore extends CoupleStore {
         final item = Map<String, dynamic>.from(raw as Map);
         if (item['photoId'] == null) continue;
         item['caption'] = item['text'];
+        item['addedBy'] = item['senderId'] == uid ? yourName : partnerName;
         item['path'] = await photoPath(item['photoId'] as String);
         nextMemories.add(item);
       }
@@ -375,15 +405,70 @@ class CloudCoupleStore extends CoupleStore {
   }
 
   @override
-  Future<void> addMemory(String path, String caption) async {
+  Future<void> addMemory(
+    String path,
+    String caption, {
+    String album = '',
+    DateTime? memoryDate,
+    List<String> tags = const [],
+    bool aiTags = false,
+  }) async {
+    await _requireMemorySupport();
     final id = await upload(path);
+    final memoryId = newRequestId();
     await action({
       'action': 'memory',
-      'id': newRequestId(),
+      'id': memoryId,
       'text': caption,
       'photoId': id,
+      'album': album,
+      'memoryDate': (memoryDate ?? DateTime.now()).toIso8601String(),
+      'tags': tags,
     });
+    if (aiTags) {
+      try {
+        await tagMemory(memoryId, id);
+      } catch (_) {
+        memoryTagNotice = 'Photo saved to your album. Automatic tags are unavailable right now.';
+      }
+    }
     await refresh();
+  }
+
+  @override
+  Future<void> deleteMemories(List<String> ids) async {
+    await _requireMemorySupport();
+    await action({'action': 'delete_memories', 'ids': ids});
+    await refresh();
+  }
+
+  Future<void> _requireMemorySupport() async {
+    try {
+      final capabilities = await action({'action': 'memory_capabilities'});
+      if (capabilities['albums'] == true &&
+          capabilities['deleteMemories'] == true) {
+        return;
+      }
+    } catch (error) {
+      if (!error.toString().contains('Unknown action')) rethrow;
+    }
+    throw Exception(
+      'The shared server needs an update before albums can be changed. Please contact the app administrator.',
+    );
+  }
+
+  Future<List<String>> tagMemory(String memoryId, String photoId) async {
+    final response = await request(
+      'couple/memory-tags',
+      body: {
+        'memoryId': memoryId,
+        'photoId': photoId,
+        'operation': 'memory_tags',
+      },
+    );
+    return List<String>.from(
+      (jsonDecode(response.body) as Map)['tags'] as List,
+    );
   }
 
   @override

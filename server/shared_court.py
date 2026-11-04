@@ -41,7 +41,15 @@ def initial(couple, message):
             'lastTurnVersion':0,'facilitatorHandledVersion':0}
 
 
-def update(data, uid, case_id, body=None):
+def require_live_call(root, case_id, people, tx=None):
+    call = root.collection('hearing_calls').document(case_id).get(transaction=tx).to_dict() or {}
+    now = time.time()
+    if (len(people) != 2 or call.get('status') != 'connected' or not call.get('offer') or not call.get('answer')
+            or not all(now - call.get('readyAt', {}).get(person, 0) < 15 for person in people)):
+        raise AccessError(409, 'Both partners must be connected to the voice call before continuing.')
+
+
+def update(data, uid, case_id, body=None, voice_version=None):
     root, ref, couple, message=ref_for(data,uid,case_id)
     if body is None:
         return ref.get().to_dict() or initial(couple,message)
@@ -64,8 +72,9 @@ def update(data, uid, case_id, body=None):
             state['scenePhotoId']=None
         elif op=='join':
             state['joined']=list(set(state['joined']+[uid]))
-            if len(state['joined'])==2 and state['deadline'] is None:state['deadline']=now+120
+            # Entering the screen does not start the voice session or its timer.
         elif op=='ai_consent':
+            require_live_call(root, case_id, state['people'], tx)
             if len(state.get('joined', [])) != 2:
                 raise AccessError(409,'Both partners must join before enabling Metherapy.')
             if body.get('version')!=state['version']:
@@ -76,10 +85,19 @@ def update(data, uid, case_id, body=None):
             state['aiConsent']=consents
             if len(set(consents))==2 and not state.get('openingResponseDone'):
                 state.update(facilitatorPending=True,openingTriggerBy=uid,deadline=None)
+        elif op=='speech_done':
+            if body.get('playbackId') != state.get('playbackId'):
+                raise AccessError(409,'The spoken response changed.')
+            if uid not in state.get('playbackPending', []):
+                return state
+            state['playbackPending'] = [p for p in state.get('playbackPending',[]) if p != uid]
+            if not state['playbackPending'] and state['phase'] in TURNS:
+                state['deadline'] = now + 120
         elif op=='end':
             if uid not in state['people']:
                 raise AccessError(403,'Only a session participant can end this session.')
-            state.update(phase=18,closedStatus='ended',deadline=None,
+            state.update(phase=18,closedStatus='ended',deadline=None,endedBy=uid,
+                         endedByName=state['names'][state['people'].index(uid)],endedAt=now,
                          facilitatorPending=False,lease=None)
         else:
             if len(state['joined'])!=2 and not (op=='evidence' and state['phase']==0):
@@ -88,10 +106,13 @@ def update(data, uid, case_id, body=None):
                 raise AccessError(409,'The hearing changed. Refresh before continuing.')
             phase=state['phase']
             if op=='turn':
+                require_live_call(root, case_id, state['people'], tx)
+                if not state.get('openingResponseDone') or state.get('facilitatorPending') or state.get('playbackPending') or state.get('deadline') is None:
+                    raise AccessError(409, 'Wait for Metherapy before taking your turn.')
                 if phase not in TURNS:
                     raise AccessError(409,'This step is not a speaking turn.')
                 role,field,index=TURNS[phase]
-                expired=now>=state['deadline']
+                expired=now>=state['deadline'] and not (voice_version == state['version'] and now < state['deadline']+20)
                 if not expired and uid!=state['people'][role]:
                     raise AccessError(403,'It is your partner’s turn.')
                 value=body.get('text','')
@@ -149,6 +170,8 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
         if not state:
             raise AccessError(409, 'Enter the session first.')
         art = operation == 'art'
+        if not art:
+            require_live_call(root, case_id, state['people'], tx)
         if art:
             if state['phase'] != 0 or len(state['joined']) == 2 or not all(state.get('portraits', [])):
                 raise AccessError(409, 'Both people must add a consented portrait before entering the session.')
@@ -163,11 +186,11 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
                     raise AccessError(409, 'Metherapy has already welcomed you.')
                 action = 'opening'
             else:
-                if state.get('lastTurnVersion', 0) <= state.get('facilitatorHandledVersion', 0):
+                if not state.get('conclusionPending') and state.get('lastTurnVersion', 0) <= state.get('facilitatorHandledVersion', 0):
                     raise AccessError(409, 'There is no new turn for Metherapy to reflect on.')
                 if state['phase'] not in TURNS and state['phase'] not in AI_PHASES:
                     raise AccessError(409, 'This session step is not ready for a reflection.')
-                action = AI_PHASES.get(state['phase'], 'reflection')
+                action = 'reflection' if state.get('conclusionPending') else AI_PHASES.get(state['phase'], 'reflection')
         else:
             if len(set(state.get('aiConsent', []))) != 2:
                 raise AccessError(403, 'Both partners must agree before sharing session context with Metherapy.')
@@ -221,6 +244,7 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
         ]
         case = {key: state.get(key, '') for key in fields}
         case['therapyLanguage'] = state.get('therapyLanguage', 'en')
+        case['sessionElapsedSeconds'] = max(0, int(time.time() - state.get('voiceStartedAt', time.time())))
         case['latestTurn'] = {
             'participant': state.get('lastTurnBy'),
             'phase': state.get('lastTurnPhase'),
@@ -261,6 +285,8 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
                     facilitatorPending=False,
                     facilitatorHandledVersion=latest.get('lastTurnVersion', 0),
                 )
+                if latest.pop('conclusionPending', False):
+                    latest['conclusionOffered'] = True
                 if action == 'opening':
                     latest['openingResponseDone'] = True
                 latest['deadline'] = now + 120 if latest['phase'] in TURNS else None
@@ -281,6 +307,7 @@ def model_review(data, uid, case_id, body, key, spark_model, security, token, re
                     latest['ruling'] = answer['result']
                     if action == 'verdict':
                         latest['firstRuling'] = answer['result']
+            latest.update(playbackId=secrets.token_hex(12), playbackPending=list(latest['people']), deadline=None)
             tx.set(ref, latest)
             return latest
 

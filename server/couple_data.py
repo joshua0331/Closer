@@ -1,6 +1,7 @@
 """Authenticated shared couple data. Separate collections; no client DB access."""
 import base64
 import hashlib
+import json
 import math
 import os
 import secrets
@@ -144,7 +145,7 @@ class CoupleData:
         batch.commit()
         return {'session': token, 'uid': uid, 'roomId': cid, 'caseId': 'hearing', 'invite': code, 'expires': expiry}
 
-    def admit(self, uid, photo=False):
+    def admit(self, uid, photo=False, memory_tag=False):
         ref = self.db.collection('closer_app_limits').document(uid)
         now = int(time.time())
         @firestore.transactional
@@ -153,9 +154,11 @@ class CoupleData:
             minute, day = now // 60, now // 86400
             calls = record.get('calls', 0) if record.get('minute') == minute else 0
             photos = record.get('photos', 0) if record.get('day') == day else 0
-            if calls >= 90 or (photo and photos >= 20):
+            tags = record.get('memoryTags', 0) if record.get('day') == day else 0
+            if calls >= 90 or (photo and photos >= 20) or (memory_tag and tags >= 20):
                 raise AccessError(429, 'Please wait before uploading or syncing again.')
-            tx.set(ref, {'minute': minute, 'calls': calls+1, 'day': day, 'photos': photos + int(photo)})
+            tx.set(ref, {'minute': minute, 'calls': calls+1, 'day': day,
+                         'photos': photos + int(photo), 'memoryTags': tags + int(memory_tag)})
         reserve(self.db.transaction())
 
     def member(self, uid):
@@ -180,11 +183,15 @@ class CoupleData:
             docs = root.collection(collection).order_by('createdAt', direction=firestore.Query.DESCENDING).limit(150).stream()
             return [{'id': doc.id, **doc.to_dict()} for doc in docs]
         avatars = {}
+        statuses = {}
         for member_id in couple.get('members', []):
             member_profile = self.db.collection('closer_profiles').document(member_id).get().to_dict() or {}
+            status = member_profile.get('deviceStatus', {})
+            if status.get('coupleId') == cid:
+                statuses[member_id] = status
             if member_profile.get('avatarPhotoId'):
                 avatars[member_id] = member_profile['avatarPhotoId']
-        return {'profile': profile, 'couple': {'id': cid, **couple, 'avatars': avatars},
+        return {'profile': profile, 'couple': {'id': cid, **couple, 'avatars': avatars, 'deviceStatuses': statuses},
                 'messages': list(reversed(records('messages'))), 'memories': records('memories')}
 
     @staticmethod
@@ -218,10 +225,13 @@ class CoupleData:
                             title=event.get('title', 'Closer · Place alert'),
                             body=event['text'],
                         ),
-                        data={'type': event.get('type', 'saved_place'), 'placeId': event.get('placeId', ''), 'messageId': event.get('messageId', '')},
+                        data={'type': event.get('type', 'saved_place'), 'placeId': event.get('placeId', ''), 'messageId': event.get('messageId', ''), 'sentAt': event.get('sentAt', '')},
                         android=messaging.AndroidConfig(
                             priority='high',
-                            notification=messaging.AndroidNotification(channel_id='closer_chat_messages' if event.get('type') == 'chat' else 'closer_place_alerts'),
+                            notification=messaging.AndroidNotification(
+                                channel_id='closer_chat_messages' if event.get('type') in {'chat', 'metherapy_invite'} else 'closer_place_alerts',
+                                event_timestamp=datetime.fromisoformat(event['sentAt'].replace('Z', '+00:00')) if event.get('sentAt') else None,
+                                tag=event.get('messageId') or None, sound='default'),
                         ),
                         apns=messaging.APNSConfig(
                             payload=messaging.APNSPayload(aps=messaging.Aps(sound='default')),
@@ -316,6 +326,18 @@ class CoupleData:
         else:
             cid, couple = self.member(uid)
             root = self.db.collection('closer_couples').document(cid)
+            if action == 'device_status':
+                battery = body.get('battery')
+                if battery is not None and (type(battery) is not int or not 0 <= battery <= 100):
+                    raise AccessError(400, 'Invalid battery level.')
+                if type(body.get('charging')) is not bool or body.get('connection') not in {'wifi', 'mobile', 'offline', 'other'}:
+                    raise AccessError(400, 'Invalid device status.')
+                self.db.collection('closer_profiles').document(uid).set({'deviceStatus': {
+                    'battery': battery, 'charging': body['charging'], 'connection': body['connection'],
+                    'coupleId': cid, 'updatedAt': datetime.now(timezone.utc).isoformat()}}, merge=True)
+                return {'ok': True}
+            if action == 'memory_capabilities':
+                return {'albums': True, 'deleteMemories': True}
             if action in {'message', 'memory'}:
                 item_id = clean(body.get('id'), 80)
                 if not all(c.isalnum() or c in '_-' for c in item_id):
@@ -335,6 +357,17 @@ class CoupleData:
                     return self.state(uid)
                 item = {'text': text, 'createdAt': now, 'senderId': uid, 'photoId': photo,
                         'kind': 'photo' if photo else 'text', 'hearts': []}
+                if action == 'memory':
+                    album = clean(body.get('album', ''), 80, False)
+                    memory_date = clean(body.get('memoryDate', now), 40)
+                    try:
+                        datetime.fromisoformat(memory_date.replace('Z', '+00:00'))
+                    except ValueError:
+                        raise AccessError(400, 'Choose a valid memory date.')
+                    tags = body.get('tags', [])
+                    if not isinstance(tags, list) or len(tags) > 12 or any(not isinstance(tag, str) or len(tag) > 32 for tag in tags):
+                        raise AccessError(400, 'Memory tags are invalid.')
+                    item.update(album=album, memoryDate=memory_date, tags=[tag.strip().lower() for tag in tags if tag.strip()])
                 if action == 'message' and body.get('summons') is True:
                     language = body.get('therapyLanguage', 'en')
                     if language not in {'en', 'id', 'ms', 'hi', 'fil'}:
@@ -350,9 +383,9 @@ class CoupleData:
                     receiver = next((member for member in couple.get('members', []) if member != uid), None)
                     if receiver:
                         sender = (couple.get('names') or {}).get(uid, 'Your partner')
-                        preview = 'Invited you to a Metherapy session' if item['kind'] == 'court' else ('Sent a photo' if photo else text[:160])
+                        preview = ('Invited you to a Metherapy session: ' + text[:300]) if item['kind'] == 'court' else (('Photo: ' + text[:500]) if photo and text else 'Sent a photo' if photo else text[:700])
                         self._send_place_alerts(receiver, [{'title': f'Closer · {sender}', 'text': preview,
-                            'type': 'chat', 'messageId': item_id}])
+                            'type': 'metherapy_invite' if item['kind'] == 'court' else 'chat', 'messageId': item_id, 'sentAt': now}])
             elif action == 'push_unregistration':
                 profile_ref.set({'pushIds': []}, merge=True)
             elif action == 'push_registration':
@@ -407,6 +440,17 @@ class CoupleData:
                     places = current.get('savedPlaces', [])
                     tx.set(place_ref, {'savedPlaces': [p for p in places if p.get('id') != place_id]}, merge=True)
                 delete_place(self.db.transaction())
+            elif action == 'delete_memories':
+                ids = body.get('ids')
+                if not isinstance(ids, list) or not 1 <= len(ids) <= 500:
+                    raise AccessError(400, 'Choose between 1 and 500 memories to delete.')
+                ids = [clean(item_id, 80) for item_id in ids]
+                if any(not all(c.isalnum() or c in '_-' for c in item_id) for item_id in ids):
+                    raise AccessError(400, 'Invalid record.')
+                batch = self.db.batch()
+                for item_id in set(ids):
+                    batch.delete(root.collection('memories').document(item_id))
+                batch.commit()
             elif action == 'heart':
                 ref = root.collection('messages').document(clean(body.get('id'),80))
                 if not ref.get().exists:
@@ -484,6 +528,41 @@ class CoupleData:
         if not isinstance(photo_id,str) or not re_photo(photo_id):
             raise AccessError(400, 'Invalid photo.')
         return self.bucket.blob(f'{cid}/{photo_id}').download_as_bytes()
+
+    def tag_memory(self, uid, memory_id, photo_id, api_key, model):
+        cid, _ = self.member(uid)
+        memory_ref = self.db.collection('closer_couples').document(cid).collection('memories').document(memory_id)
+        memory = memory_ref.get().to_dict()
+        if not memory or memory.get('photoId') != photo_id:
+            raise AccessError(404, 'Memory unavailable.')
+        if memory.get('visualTagsVersion') == 2:
+            return {'tags': memory['tags']}
+        raw = self.read_photo(uid, photo_id)
+        mime = 'image/jpeg' if raw.startswith(b'\xff\xd8\xff') else 'image/png'
+        prompt = ('Inspect the actual photo and return up to 20 visual search tags. Include visible objects, animals, scenery, product types, and clearly readable text, labels and brand names. For example, ONLY if a Coca-Cola label is visible include coca cola, coca-cola, coke, soda and bottle or can as appropriate. Include singular and plural nouns such as cat and cats. Do not guess unclear brands or unreadable text. '
+                  'Use common nouns or simple phrases (for example flowers, car, beach, sunset). '
+                  'Do not infer identities, relationships, location, sensitive traits, or anything not clearly visible. '
+                  'Return only JSON: {"tags":["..."]}.')
+        response = requests.post('https://api.meta.ai/v1/responses', headers={
+            'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json={
+                'model': model, 'store': False, 'input': [{'role': 'user', 'content': [
+                    {'type': 'input_text', 'text': prompt},
+                    {'type': 'input_image', 'image_url': f'data:{mime};base64,{base64.b64encode(raw).decode()}'}]}]}, timeout=45)
+        response.raise_for_status()
+        data = response.json()
+        text = data.get('output_text', '')
+        if not text:
+            text = ''.join(part.get('text', '') for output in data.get('output', [])
+                           if output.get('type') == 'message' for part in output.get('content', [])
+                           if part.get('type') == 'output_text')
+        parsed = json.loads(text)
+        tags = parsed.get('tags') if isinstance(parsed, dict) else None
+        if not isinstance(tags, list):
+            raise ValueError('Invalid tag response')
+        normalized = list(dict.fromkeys(tag.strip().lower() for tag in tags
+                               if isinstance(tag, str) and 0 < len(tag.strip()) <= 32))[:20]
+        memory_ref.update({'tags': normalized, 'visualTagsVersion': 2})
+        return {'tags': normalized}
 
 
 def re_photo(value):

@@ -1,3 +1,5 @@
+import '../services/live_transcription.dart';
+
 import 'dart:async';
 
 import 'package:flutter/services.dart';
@@ -75,6 +77,9 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   final stt.SpeechToText _speech = stt.SpeechToText();
   final FlutterTts _therapistVoice = FlutterTts();
   late final LiveCoupleCall _liveCall;
+  late final LiveTranscription _voice;
+  String _voiceStatus = '';
+  String? _playbackAcknowledged;
   int? _lastSpokenPhase;
   String? _lastSpokenResponseId;
   int? _facilitatorAttemptedVersion;
@@ -98,6 +103,19 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _liveCall = LiveCoupleCall(widget.store, widget.caseId)
       ..addListener(_onCallChanged);
+    _voice = LiveTranscription(
+      widget.store,
+      widget.caseId,
+      onText: (text) {
+        if (mounted) setState(() => _text.text = text);
+      },
+      onState: (state) async {
+        if (mounted) await _apply(state);
+      },
+      onStatus: (status) {
+        if (mounted) setState(() => _voiceStatus = status);
+      },
+    );
     _refresh();
     _poll = Timer.periodic(
       Duration(seconds: _statePollSeconds),
@@ -114,6 +132,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_voice.cancel());
     _liveCall.removeListener(_onCallChanged);
     _liveCall.dispose();
     _speechGeneration++;
@@ -262,7 +281,8 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         consent &&
         current['openingResponseDone'] == true &&
         current['facilitatorPending'] != true &&
-        current['lease'] == null;
+        current['lease'] == null &&
+        (current['playbackPending'] as List? ?? const []).isEmpty;
     _liveCall.setTurnAllowed(
       _liveCall.connected &&
           aiReady &&
@@ -272,6 +292,29 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
           !_therapistSpeaking &&
           !_listening,
     );
+    final track = _liveCall.microphoneTrackId;
+    final validTurn =
+        _liveCall.connected &&
+        aiReady &&
+        _turns[phase] == role &&
+        !_therapistSpeaking &&
+        !_listening;
+    if (validTurn && hasTime && !_liveCall.muted && track != null && !_busy) {
+      final remaining = deadline is num
+          ? (deadline -
+                    DateTime.now().millisecondsSinceEpoch / 1000 -
+                    _clockOffset)
+                .ceil()
+          : 120;
+      unawaited(_voice.start(current['version'] as int, track, remaining));
+    } else if (_voice.active && !_voice.finishing) {
+      if (validTurn && !hasTime) {
+        unawaited(_voice.finish());
+      } else {
+        unawaited(_voice.cancel());
+        _voice.allowRetry();
+      }
+    }
   }
 
   void _onCallChanged() {
@@ -329,6 +372,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   }
 
   void _maybeSpeakTherapist(Map<String, dynamic> data, int phase) {
+    if (!_liveCall.connected) return;
     final responses = data['facilitatorResponses'] as List? ?? const [];
     final latest = responses.isEmpty ? null : responses.last as Map;
     final latestId = latest?['id'] as String?;
@@ -361,11 +405,31 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
       } finally {
         if (generation == _speechGeneration) {
           _therapistSpeaking = false;
+          final playbackId = data['playbackId'] as String?;
+          if (playbackId != null) await _acknowledgePlayback(playbackId);
           _syncCallTurn();
           if (mounted) setState(() {});
         }
       }
     }());
+  }
+
+  Future<void> _acknowledgePlayback(String id) async {
+    if (_playbackAcknowledged == id) return;
+    try {
+      final state = await widget.store.hearing(
+        widget.caseId,
+        body: {'operation': 'speech_done', 'playbackId': id},
+      );
+      _playbackAcknowledged = id;
+      if (mounted) await _apply(state);
+    } catch (_) {
+      if (mounted)
+        setState(
+          () => _voiceStatus =
+              'Tap Continue after the spoken response to resume.',
+        );
+    }
   }
 
   Future<void> _startVoiceCall() async {
@@ -392,7 +456,9 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
   }) {
     if (!both || phase >= 18) return const SizedBox.shrink();
     final canSpeak = _callTurnAllowed(role, phase);
-    final title = _liveCall.connected
+    final title = _liveCall.status == 'ended'
+        ? 'The voice call has ended'
+        : _liveCall.connected
         ? (_liveCall.muted
               ? 'Call connected · microphone muted'
               : 'You’re live')
@@ -404,7 +470,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final detail = _liveCall.connected
         ? 'You hear your partner live. Each phone also reads Metherapy’s replies aloud.'
         : _liveCall.error ??
-              'Both partners join from their phones. Your mic opens only on your turn.';
+              'By joining, you agree that your speaking-turn audio is streamed through Closer to Meta for transcription. Transcripts, the topic and optional photos are shared with Meta AI. Closer does not save raw audio. Both phones read replies aloud. A 3-second pause after speech ends your turn.';
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 16),
@@ -517,69 +583,8 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         !_listening;
   }
 
-  Widget _metherapyConsentCard({required bool hasConsented}) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: .78),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withValues(alpha: .9)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            tr('Let Metherapy join?'),
-            style: TextStyle(
-              color: Color(0xFF633322),
-              fontWeight: FontWeight.w700,
-              fontSize: 16,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            tr(
-              'After you both agree, Meta AI will welcome you and respond to each submitted turn. It receives the topic and turn text; shared photos and captions are sent when it reviews them. Your live call audio stays between your phones. Meta writes the response, and each phone reads it aloud with its built-in voice.',
-            ),
-            style: TextStyle(
-              color: Color(0xFF80665D),
-              fontSize: 12,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 10),
-          if (hasConsented)
-            Row(
-              children: [
-                Icon(Icons.check_circle_outline, color: Color(0xFFB85842)),
-                SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    tr('You agreed. Waiting for your partner.'),
-                    style: TextStyle(color: Color(0xFF764936)),
-                  ),
-                ),
-              ],
-            )
-          else
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _busy ? null : _consentToMetherapy,
-                icon: const Icon(Icons.graphic_eq_rounded),
-                label: Text('Agree and invite Metherapy'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFFB85842),
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+  Widget _metherapyConsentCard({required bool hasConsented}) =>
+      const SizedBox.shrink();
 
   Widget _therapistResponseCard(Map<String, dynamic> data) {
     final responses = data['facilitatorResponses'] as List? ?? const [];
@@ -749,39 +754,6 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     return false;
   }
 
-  Future<void> _consentToMetherapy() async {
-    final existing = _case;
-    if (existing == null ||
-        (existing['aiConsent'] as List? ?? const []).contains(
-          widget.store.uid,
-        )) {
-      return;
-    }
-    if (!await _ensureAiConnection() || !mounted) return;
-    final agreed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(tr('Invite Metherapy into this session?')),
-        content: Text(
-          tr(
-            'If both of you agree, Metherapy will receive the topic and the text each of you submits. Photos and captions are sent when Metherapy is asked to review them. Your live call audio stays between your phones; Meta receives the submitted text, not the call audio. Meta writes the words, and your phone reads them aloud with its built-in voice.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(tr('Cancel')),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(tr('I agree')),
-          ),
-        ],
-      ),
-    );
-    if (agreed == true) await _act('ai_consent');
-  }
-
   void _queueFacilitator(Map<String, dynamic> data) {
     final lease = data['lease'];
     final leaseActive =
@@ -789,7 +761,8 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         lease['until'] is num &&
         (lease['until'] as num) >
             DateTime.now().millisecondsSinceEpoch / 1000 + _clockOffset;
-    if (!_aiAvailable ||
+    if (!_liveCall.connected ||
+        !_aiAvailable ||
         (data['aiConsent'] as List? ?? const []).length != 2 ||
         data['facilitatorPending'] != true ||
         leaseActive) {
@@ -814,7 +787,8 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
 
   Future<void> _requestFacilitator({bool retry = false}) async {
     final current = _case;
-    if (current == null || _facilitatorRequestRunning) return;
+    if (!_liveCall.connected || current == null || _facilitatorRequestRunning)
+      return;
     final version = current['version'] as int;
     if (retry) _facilitatorAttemptedVersion = null;
     if (_facilitatorAttemptedVersion == version) return;
@@ -1054,7 +1028,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         Text(
           tr('Metherapy'),
           style: TextStyle(
-            color: Colors.white,
+            color: Color(0xFF544445),
             fontWeight: FontWeight.w700,
             fontSize: fontSize,
           ),
@@ -1103,7 +1077,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
               style: const TextStyle(
-                color: Colors.white,
+                color: Color(0xFF544445),
                 fontWeight: FontWeight.w700,
                 fontSize: 15,
               ),
@@ -1117,12 +1091,21 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
             child: ClipOval(
               child: path == null
                   ? Container(
-                      color: const Color(0xFFFFF7F0),
+                      color: const Color(0xFFC28F88),
                       alignment: Alignment.center,
-                      child: const Icon(
-                        Icons.person_rounded,
-                        size: 44,
-                        color: Color(0xFF9B654E),
+                      child: Text(
+                        names[index].trim().isEmpty
+                            ? '?'
+                            : names[index]
+                                  .trim()
+                                  .characters
+                                  .first
+                                  .toUpperCase(),
+                        style: const TextStyle(
+                          fontSize: 44,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     )
                   : photoImage(path, fit: BoxFit.cover),
@@ -1223,7 +1206,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: Colors.white,
+                      color: Color(0xFF544445),
                       fontWeight: FontWeight.w700,
                       fontSize: 15,
                     ),
@@ -1242,12 +1225,21 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
             child: ClipOval(
               child: path == null
                   ? Container(
-                      color: const Color(0xFFFFF7F0),
+                      color: const Color(0xFFC28F88),
                       alignment: Alignment.center,
-                      child: const Icon(
-                        Icons.person_rounded,
-                        size: 52,
-                        color: Color(0xFF9B654E),
+                      child: Text(
+                        names[index].trim().isEmpty
+                            ? '?'
+                            : names[index]
+                                  .trim()
+                                  .characters
+                                  .first
+                                  .toUpperCase(),
+                        style: const TextStyle(
+                          fontSize: 44,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     )
                   : photoImage(path, fit: BoxFit.cover),
@@ -1289,7 +1281,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         : (phase == 18 ? tr('Session complete') : prompt);
 
     return Scaffold(
-      backgroundColor: const Color(0xFFFFA998),
+      backgroundColor: const Color(0xFFFCF8F6),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -1307,38 +1299,6 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                   padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
                   child: Column(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 11,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: .22),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: .60),
-                          ),
-                          borderRadius: BorderRadius.circular(32),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              tr('Metherapy'),
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 19,
-                              ),
-                            ),
-                            SizedBox(width: 8),
-                            Icon(
-                              Icons.verified_rounded,
-                              color: Color(0xFF20A9F4),
-                              size: 23,
-                            ),
-                          ],
-                        ),
-                      ),
                       Expanded(
                         child: SingleChildScrollView(
                           child: Column(
@@ -1444,6 +1404,58 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                           ),
                         ),
                       ),
+                      if (_voiceStatus.isNotEmpty)
+                        Text(
+                          _voiceStatus,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Color(0xFF66565B),
+                            fontSize: 12,
+                          ),
+                        ),
+                      if (myTurn &&
+                          !_voice.active &&
+                          !_voice.finishing &&
+                          _liveCall.connected)
+                        TextButton(
+                          onPressed: () {
+                            _voice.allowRetry();
+                            _syncCallTurn();
+                          },
+                          child: const Text('Retry voice'),
+                        ),
+                      if ((c['playbackPending'] as List? ?? const []).contains(
+                            widget.store.uid,
+                          ) &&
+                          !_therapistSpeaking)
+                        TextButton(
+                          onPressed: () =>
+                              _acknowledgePlayback(c['playbackId'] as String),
+                          child: const Text('Continue after spoken response'),
+                        ),
+                      if (_liveCall.connected &&
+                          myTurn &&
+                          _turns.containsKey(phase) &&
+                          c['facilitatorPending'] != true)
+                        TextButton.icon(
+                          onPressed: _busy
+                              ? null
+                              : () async {
+                                  if (_voice.active) {
+                                    await _voice.finish();
+                                  } else if (_text.text.trim().isNotEmpty) {
+                                    await _act(
+                                      'turn',
+                                      extra: {'text': _text.text.trim()},
+                                    );
+                                  } else {
+                                    _voice.allowRetry();
+                                    _syncCallTurn();
+                                  }
+                                },
+                          icon: const Icon(Icons.skip_next_rounded),
+                          label: const Text('End turn'),
+                        ),
                       Padding(
                         padding: const EdgeInsets.only(top: 12),
                         child: Row(
@@ -1542,6 +1554,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final bothConsented = aiConsent.length == 2;
     final myConsent = aiConsent.contains(widget.store.uid);
     final canSubmit =
+        _liveCall.connected &&
         bothConsented &&
         c['openingResponseDone'] == true &&
         c['facilitatorPending'] != true &&
@@ -1550,6 +1563,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         _turns.containsKey(phase) &&
         seconds > 0;
     final canContinue =
+        _liveCall.connected &&
         bothConsented &&
         c['openingResponseDone'] == true &&
         c['facilitatorPending'] != true &&
@@ -1701,7 +1715,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                           Text(
                             c['closedStatus'] == 'accepted'
                                 ? 'You both chose this next step. This session has ended and can’t be re-entered.'
-                                : 'This session has ended and can’t be re-entered.',
+                                : '${_case?['endedByName'] ?? 'A partner'} ended this session. It can’t be re-entered.',
                             style: const TextStyle(color: Color(0xFF764936)),
                           )
                         else if (canContinue)
@@ -1841,9 +1855,19 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
         ? _turns[phase]!
         : (line.speaker < 2 ? line.speaker : 2);
     final canSubmit =
-        both && aiReady && _turns.containsKey(phase) && myTurn && seconds > 0;
+        _liveCall.connected &&
+        both &&
+        aiReady &&
+        _turns.containsKey(phase) &&
+        myTurn &&
+        seconds > 0;
     final canContinue =
-        both && aiReady && _turns.containsKey(phase) && myTurn && seconds == 0;
+        _liveCall.connected &&
+        both &&
+        aiReady &&
+        _turns.containsKey(phase) &&
+        myTurn &&
+        seconds == 0;
     final canSpeak = canSubmit && !_busy;
     final canAddPhoto =
         phase == 0 || (both && phase <= 8 && myTurn && seconds > 0);
@@ -1860,7 +1884,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final isMetaTurn = activeSpeaker == 2;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFFFA998),
+      backgroundColor: const Color(0xFFFCF8F6),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -1893,38 +1917,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                                   color: Color(0xFF6E3929),
                                 ),
                               ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 8,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: .30),
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: .48),
-                                  ),
-                                  borderRadius: BorderRadius.circular(28),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      tr('Metherapy'),
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 17,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 7),
-                                    const Icon(
-                                      Icons.verified_rounded,
-                                      color: Color(0xFF20A9F4),
-                                      size: 22,
-                                    ),
-                                  ],
-                                ),
-                              ),
+                              const Spacer(),
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 10,
@@ -2020,7 +2013,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                                 ? 'Meta AI · Muse Wonder'
                                 : 'Meta AI · Muse Spark',
                             style: TextStyle(
-                              color: Colors.white.withValues(alpha: .90),
+                              color: const Color(0xFF796D70),
                               fontSize: 13,
                             ),
                           ),
@@ -2272,7 +2265,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                             Text(
                               c['closedStatus'] == 'accepted'
                                   ? 'You both chose this next step. This session has ended and can’t be re-entered.'
-                                  : 'This session has ended and can’t be re-entered.',
+                                  : '${_case?['endedByName'] ?? 'A partner'} ended this session. It can’t be re-entered.',
                               textAlign: TextAlign.center,
                               style: const TextStyle(color: Color(0xFF764936)),
                             )
@@ -2352,7 +2345,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                                   Flexible(
                                     child: Text(
                                       canSpeak
-                                          ? 'Your live call audio is shared with your partner; only submitted turn text goes to Metherapy.'
+                                          ? 'Your turn audio is transcribed by Meta and shared as session text.'
                                           : 'Your call microphone is muted until your turn.',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(
@@ -2434,7 +2427,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final c = _case;
     if (c == null) {
       return Scaffold(
-        backgroundColor: const Color(0xFFFFA998),
+        backgroundColor: const Color(0xFFFCF8F6),
         body: Stack(
           fit: StackFit.expand,
           children: [
@@ -2520,7 +2513,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
     final names = List<String>.from(c['names'] as List);
     final topic = (c['topic'] as String? ?? '').trim();
     return Scaffold(
-      backgroundColor: const Color(0xFFFFA998),
+      backgroundColor: const Color(0xFFFCF8F6),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -2585,7 +2578,7 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                                 ? 'Meta AI · Muse Wonder'
                                 : 'Meta AI · Muse Spark',
                             style: TextStyle(
-                              color: Colors.white.withValues(alpha: .90),
+                              color: const Color(0xFF796D70),
                               fontSize: 13,
                             ),
                           ),
@@ -2775,7 +2768,7 @@ class _MetherapyBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Image.asset(
-    'assets/branding/dreamy_peach_gradient_waves.png',
+    'assets/branding/metherapy_soft_waves.png',
     fit: BoxFit.cover,
     errorBuilder: (context, error, stackTrace) => const DecoratedBox(
       decoration: BoxDecoration(

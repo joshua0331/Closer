@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -99,11 +100,42 @@ class NotificationService {
 
   Future<void> showPartnerDistance(
     String partnerName,
-    String distanceText,
-  ) async {
+    String distanceText, {
+    String yourName = 'You',
+    DateTime? anniversary,
+    String? yourAvatar,
+    String? partnerAvatar,
+  }) async {
     await init();
     if (!_enabled || kIsWeb) return;
-    const details = NotificationDetails(
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final today = DateTime.now();
+      final days = anniversary == null
+          ? null
+          : DateTime(today.year, today.month, today.day)
+                .difference(
+                  DateTime(
+                    anniversary.year,
+                    anniversary.month,
+                    anniversary.day,
+                  ),
+                )
+                .inDays;
+      await const MethodChannel('com.jcm.closer/distance')
+          .invokeMethod('show', {
+            'yourName': yourName,
+            'partnerName': partnerName,
+            'yourAvatar': yourAvatar,
+            'partnerAvatar': partnerAvatar,
+            'distance': distanceText,
+            'together': days == null
+                ? 'Together with you'
+                : 'Together for ${days < 0 ? 0 : days} days',
+          });
+      return;
+    }
+
+    final details = NotificationDetails(
       android: AndroidNotificationDetails(
         'closer_distance_channel',
         'Closer distance updates',
@@ -114,14 +146,37 @@ class NotificationService {
         showWhen: false,
         ongoing: true,
         onlyAlertOnce: true,
-        styleInformation: BigTextStyleInformation(''),
+        largeIcon: partnerAvatar == null
+            ? null
+            : FilePathAndroidBitmap(partnerAvatar),
+        styleInformation: MessagingStyleInformation(
+          Person(
+            name: 'You',
+            icon: yourAvatar == null
+                ? null
+                : BitmapFilePathAndroidIcon(yourAvatar),
+          ),
+          conversationTitle: 'Closer · Our distance',
+          messages: [
+            Message(
+              distanceText,
+              DateTime.now(),
+              Person(
+                name: partnerName,
+                icon: partnerAvatar == null
+                    ? null
+                    : BitmapFilePathAndroidIcon(partnerAvatar),
+              ),
+            ),
+          ],
+        ),
       ),
       iOS: DarwinNotificationDetails(presentAlert: true, presentSound: false),
     );
     await _notifications.show(
       888,
       'Closer · Connected',
-      'You  📍 ┈┈┈┈┈ 📍  $partnerName\nOur distance: $distanceText',
+      'You & $partnerName · $distanceText',
       details,
     );
   }
@@ -130,6 +185,7 @@ class NotificationService {
     String title,
     String body, {
     bool chat = false,
+    DateTime? sentAt,
   }) async {
     await init();
     if (kIsWeb) return;
@@ -137,8 +193,12 @@ class NotificationService {
       android: AndroidNotificationDetails(
         chat ? 'closer_chat_messages' : 'closer_place_alerts',
         chat ? 'Closer messages' : 'Saved place alerts',
-        channelDescription:
-            'Alerts when your partner arrives at or leaves a saved place.',
+        channelDescription: chat
+            ? 'Messages and Metherapy invitations.'
+            : 'Saved place alerts.',
+        showWhen: true,
+        when: (sentAt ?? DateTime.now()).millisecondsSinceEpoch,
+        styleInformation: BigTextStyleInformation(body),
         importance: Importance.high,
         priority: Priority.high,
       ),
