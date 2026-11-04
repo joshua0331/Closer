@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gm;
@@ -28,12 +29,20 @@ class _SavedPlacesPageState extends State<SavedPlacesPage> {
           .toList();
 
   Future<void> _addOrEdit([Map<String, dynamic>? place]) async {
+    final partner = widget.store.locations[widget.store.partnerUid];
+    final partnerCenter =
+        partner is Map && partner['lat'] is num && partner['lon'] is num
+        ? gm.LatLng(
+            (partner['lat'] as num).toDouble(),
+            (partner['lon'] as num).toDouble(),
+          )
+        : widget.initialCenter;
     final saved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => _PlaceEditor(
           store: widget.store,
           center: place == null
-              ? widget.initialCenter
+              ? partnerCenter
               : gm.LatLng(
                   (place['lat'] as num).toDouble(),
                   (place['lon'] as num).toDouble(),
@@ -261,6 +270,54 @@ class _PlaceEditor extends StatefulWidget {
 class _PlaceEditorState extends State<_PlaceEditor> {
   late final TextEditingController _name;
   late gm.LatLng _point;
+  gm.GoogleMapController? _map;
+  final _search = TextEditingController();
+  bool _searching = false;
+  Future<void> _findPlace() async {
+    if (_searching || _search.text.trim().isEmpty) return;
+    setState(() => _searching = true);
+    try {
+      final results = await const MethodChannel('com.jcm.closer/place_search')
+          .invokeListMethod<dynamic>('search', {'query': _search.text.trim()});
+      if (!mounted) return;
+      if (results == null || results.isEmpty)
+        throw Exception('No matching place. Include city or country.');
+      final selected = await showDialog<Map>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('Choose a place'),
+          children: results.map((raw) {
+            final item = raw as Map;
+            return SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, item),
+              child: Text(item['name'] as String),
+            );
+          }).toList(),
+        ),
+      );
+      if (selected == null || !mounted) return;
+      setState(() {
+        _point = gm.LatLng(
+          (selected['lat'] as num).toDouble(),
+          (selected['lon'] as num).toDouble(),
+        );
+        if (_name.text.isEmpty) _name.text = _search.text.trim();
+      });
+      await _map?.animateCamera(gm.CameraUpdate.newLatLngZoom(_point, 16));
+    } catch (_) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Place search unavailable or no match. Try a full address or mark the map.',
+            ),
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
   double _radius = 200;
   bool _arrives = true, _leaves = true, _enabled = true, _saving = false;
 
@@ -283,6 +340,8 @@ class _PlaceEditorState extends State<_PlaceEditor> {
 
   @override
   void dispose() {
+    _search.dispose();
+    _map?.dispose();
     _name.dispose();
     super.dispose();
   }
@@ -394,6 +453,21 @@ class _PlaceEditorState extends State<_PlaceEditor> {
         ),
         const SizedBox(height: 24),
         TextField(
+          controller: _search,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => _findPlace(),
+          decoration: InputDecoration(
+            labelText: 'Search place or address',
+            suffixIcon: IconButton(
+              onPressed: _searching ? null : _findPlace,
+              icon: Icon(_searching ? Icons.hourglass_top : Icons.search),
+            ),
+          ),
+        ),
+        Text(
+          '${_point.latitude.toStringAsFixed(5)}, ${_point.longitude.toStringAsFixed(5)}',
+        ),
+        TextField(
           controller: _name,
           maxLength: 50,
           decoration: InputDecoration(
@@ -418,6 +492,7 @@ class _PlaceEditorState extends State<_PlaceEditor> {
           child: SizedBox(
             height: 230,
             child: gm.GoogleMap(
+              onMapCreated: (controller) => _map = controller,
               initialCameraPosition: gm.CameraPosition(
                 target: _point,
                 zoom: 16,

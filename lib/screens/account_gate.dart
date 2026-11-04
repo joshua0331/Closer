@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
-import 'package:url_launcher/url_launcher.dart';
+
+import 'legal_page.dart';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -394,11 +396,7 @@ class _SignInState extends State<_SignIn> {
                         alignment: WrapAlignment.center,
                         children: [
                           TextButton(
-                            onPressed: () => launchUrl(
-                              Uri.parse(
-                                'https://closer-court-ddf3a.web.app/terms.html',
-                              ),
-                            ),
+                            onPressed: () => LegalPage.open(context, 'terms'),
                             style: TextButton.styleFrom(foregroundColor: muted),
                             child: Text(
                               tr('Terms'),
@@ -406,11 +404,7 @@ class _SignInState extends State<_SignIn> {
                             ),
                           ),
                           TextButton(
-                            onPressed: () => launchUrl(
-                              Uri.parse(
-                                'https://closer-court-ddf3a.web.app/privacy.html',
-                              ),
-                            ),
+                            onPressed: () => LegalPage.open(context, 'privacy'),
                             style: TextButton.styleFrom(foregroundColor: muted),
                             child: Text(
                               tr('Privacy'),
@@ -418,11 +412,7 @@ class _SignInState extends State<_SignIn> {
                             ),
                           ),
                           TextButton(
-                            onPressed: () => launchUrl(
-                              Uri.parse(
-                                'mailto:joshuachristianmirang@gmail.com',
-                              ),
-                            ),
+                            onPressed: () => LegalPage.open(context, 'help'),
                             style: TextButton.styleFrom(foregroundColor: muted),
                             child: Text(
                               tr('Help'),

@@ -30,6 +30,7 @@ class LiveTranscription {
   int? _version;
   int _generation = 0;
   bool active = false, finishing = false;
+  bool _passIfEmpty = false;
 
   final Map<int, String> _completed = {};
   String _partial = '';
@@ -92,7 +93,7 @@ class LiveTranscription {
                 await _capture.invokeMethod('stop');
                 return;
               }
-              onStatus('Listening Â· a 3-second pause ends your turn');
+              onStatus('Listening · a 3-second pause ends your turn');
             case 'speechStart':
               _partial = '';
               onStatus('Listeningâ€¦');
@@ -115,9 +116,30 @@ class LiveTranscription {
             case 'submitted':
               onText(event['transcript'] as String? ?? '');
               await cancel();
-              onStatus('Turn sent Â· waiting for Metherapy');
+              onStatus('Turn sent · waiting for Metherapy');
               await onState(Map<String, dynamic>.from(event['state'] as Map));
             case 'empty':
+              if (_passIfEmpty) {
+                try {
+                  final response = await store.request(
+                    'couple/court/$caseId',
+                    body: {
+                      'operation': 'turn',
+                      'version': _version,
+                      'text': '',
+                      'skip': true,
+                    },
+                  );
+                  await cancel();
+                  await onState(
+                    Map<String, dynamic>.from(jsonDecode(response.body) as Map),
+                  );
+                  onStatus('Turn passed');
+                } catch (_) {
+                  await _fail('Could not pass your turn. Please retry.');
+                }
+                break;
+              }
               await _fail(
                 'No speech detected. Tap Retry voice or type your turn.',
               );
@@ -145,7 +167,8 @@ class LiveTranscription {
     }
   }
 
-  Future<void> finish() async {
+  Future<void> finish({bool passIfEmpty = false}) async {
+    _passIfEmpty = passIfEmpty;
     if (!active || finishing) return;
     finishing = true;
     _limit?.cancel();

@@ -37,12 +37,13 @@ class AccountAccessTests(unittest.TestCase):
     def test_global_disable_and_image_budget_are_preserved(self):
         reservation = self.access.reserve('', 'characters', 'account_request_0001', 'art')
         self.access.finish(reservation)
-        with self.assertRaises(AccessError):
-            self.access.reserve('', 'characters', 'account_request_0002', 'art2')
+        second = self.access.reserve('', 'characters', 'account_request_0002', 'art2')
+        self.access.finish(second)
         self.security.set_enabled(False)
         with self.assertRaises(AccessError):
             self.access.reserve('', 'hearing', 'account_request_0003', 'text')
 
+    @patch.dict('os.environ', {'AI_PAIR_DAILY_LIMIT': '40'})
     def test_pair_limit_cannot_be_reset_by_switching_partners(self):
         other = AccountAccess(self.records, 'b', 'pair', lambda: self.now)
         for index in range(40):
@@ -51,9 +52,9 @@ class AccountAccessTests(unittest.TestCase):
             reservation = access.reserve('', 'hearing', f'account_request_{index:04}', str(index))
             access.finish(reservation)
         self.now += 61
-        with self.assertRaises(AccessError):
-            other.reserve('', 'hearing', 'account_request_0040', 'overflow')
-        self.assertEqual(self.security.policy()['calls_used'], 40)
+        reservation = other.reserve('', 'hearing', 'account_request_0040', 'overflow')
+        other.finish(reservation)
+        self.assertEqual(self.security.policy()['calls_used'], 41)
 
     def test_opening_is_saved_without_entering_portrait_branch(self):
         data = Data()

@@ -3,6 +3,8 @@
 Run behind the hosting provider's HTTPS ingress. No Meta key or access code is
 shipped in the app. Usage reservations are durable and occur before Meta calls.
 """
+import logging
+import traceback
 import hashlib
 import json
 import os
@@ -181,8 +183,21 @@ def make_app(records=None, api_key=None, model=None, clock=None):
             return reply(200, result)
         except AccessError as error:
             return reply(error.status, {'error': error.message})
-        except Exception:
-            return reply(503, {'error': 'Could not sync your shared space. Please try again.'})
+        except HTTPError as error:
+            logging.error('shared_space upstream_http status=%s', error.code)
+            return reply(502, {'error': f'Meta could not respond (HTTP {error.code}). Please retry; the server API access may need checking.'})
+        except (URLError, TimeoutError):
+            logging.error('shared_space upstream_connection_failed')
+            return reply(504, {'error': 'The AI connection timed out. Your session is saved; please retry.'})
+        except ValueError as error:
+            # Log only exception type and code locations, never submitted text or provider bodies.
+            frames = traceback.extract_tb(error.__traceback__)
+            logging.error('shared_space validation_error frames=%s', [(os.path.basename(f.filename), f.name, f.lineno) for f in frames])
+            return reply(502, {'error': 'Metherapy returned an incomplete or invalid response. Your session is saved; please retry.'})
+        except Exception as error:
+            frames = traceback.extract_tb(error.__traceback__)
+            logging.error('shared_space failure type=%s frames=%s', type(error).__name__, [(os.path.basename(f.filename), f.name, f.lineno) for f in frames])
+            return reply(503, {'error': 'The session server could not sync. Please retry. If it persists, contact support.'})
 
     @app.post('/couple/chat-suggestions')
     async def chat_suggestions(request: Request):

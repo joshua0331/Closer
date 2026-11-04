@@ -1442,15 +1442,17 @@ class _SharedCourtState extends State<SharedCourt> with WidgetsBindingObserver {
                               ? null
                               : () async {
                                   if (_voice.active) {
-                                    await _voice.finish();
+                                    await _voice.finish(passIfEmpty: true);
                                   } else if (_text.text.trim().isNotEmpty) {
                                     await _act(
                                       'turn',
                                       extra: {'text': _text.text.trim()},
                                     );
                                   } else {
-                                    _voice.allowRetry();
-                                    _syncCallTurn();
+                                    await _act(
+                                      'turn',
+                                      extra: {'text': '', 'skip': true},
+                                    );
                                   }
                                 },
                           icon: const Icon(Icons.skip_next_rounded),

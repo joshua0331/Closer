@@ -34,6 +34,7 @@ class _RoomChatState extends State<RoomChat> {
   bool _showSuggestions = true;
   bool _showDistanceBanner = true;
   String? _error;
+  String? _timestampMessageId;
   Map<String, dynamic>? _replyTo;
 
   @override
@@ -68,16 +69,18 @@ class _RoomChatState extends State<RoomChat> {
         body: {'consent': true},
       );
       final data = jsonDecode(response.body) as Map;
-      if (mounted)
+      if (mounted) {
         setState(
           () => _suggestions = List<String>.from(data['suggestions'] as List),
         );
+      }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(
           () => _suggestionError =
               'AI suggestions are unavailable. Tap to retry.',
         );
+      }
     } finally {
       if (mounted) setState(() => _suggesting = false);
     }
@@ -115,6 +118,76 @@ class _RoomChatState extends State<RoomChat> {
       if (mounted) setState(() => _error = 'Failed to send. Tap to retry.');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _showMessageActions(
+    Map<String, dynamic> item,
+    String text,
+  ) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.reply_rounded),
+              title: Text(tr('Reply')),
+              onTap: () => Navigator.pop(context, 'reply'),
+            ),
+            ListTile(
+              leading: Icon(
+                item['heartedByMe'] == true
+                    ? Icons.favorite_border_rounded
+                    : Icons.favorite_rounded,
+              ),
+              title: Text(
+                tr(
+                  item['heartedByMe'] == true ? 'Remove heart' : 'Add a heart',
+                ),
+              ),
+              onTap: () => Navigator.pop(context, 'heart'),
+            ),
+            if (text.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.copy_rounded),
+                title: Text(tr('Copy text')),
+                onTap: () => Navigator.pop(context, 'copy'),
+              ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || action == null) return;
+    if (action == 'reply') {
+      setState(() => _replyTo = item);
+    } else if (action == 'copy') {
+      await Clipboard.setData(ClipboardData(text: text));
+    } else if (action == 'heart') {
+      try {
+        await widget.store.toggleHeart(item['id'] as String);
+      } catch (_) {
+        if (mounted) {
+          setState(() => _error = 'Could not update reaction. Please retry.');
+        }
+      }
+    }
+  }
+
+  Future<void> _handleComposerAction(String action) async {
+    switch (action) {
+      case 'photo':
+        await widget.onAttach();
+        break;
+      case 'metherapy':
+        widget.onInvite();
+        break;
+      case 'distance':
+        setState(() => _showDistanceBanner = !_showDistanceBanner);
+        break;
     }
   }
 
@@ -390,13 +463,14 @@ class _RoomChatState extends State<RoomChat> {
         listenable: widget.store,
         builder: (context, _) {
           final messages = widget.store.messages.reversed.toList();
-          if (messages.isEmpty)
+          if (messages.isEmpty) {
             return Center(
               child: Text(
                 tr('Your story starts here. Send a quick wave! 👋'),
                 textAlign: TextAlign.center,
               ),
             );
+          }
           return ListView.builder(
             controller: _scrollController,
             reverse: true,
@@ -411,171 +485,142 @@ class _RoomChatState extends State<RoomChat> {
                   ?.toLocal();
               return Align(
                 alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-                child: Container(
-                  constraints: BoxConstraints(
-                    maxWidth: MediaQuery.sizeOf(context).width * .72,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(
+                    () =>
+                        _timestampMessageId = _timestampMessageId == item['id']
+                        ? null
+                        : item['id'] as String,
                   ),
-                  margin: const EdgeInsets.symmetric(vertical: 6),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  decoration: BoxDecoration(
-                    color: mine ? scheme.primary : Colors.white,
-                    borderRadius: BorderRadius.only(
-                      topLeft: const Radius.circular(20),
-                      topRight: const Radius.circular(20),
-                      bottomLeft: Radius.circular(mine ? 20 : 6),
-                      bottomRight: Radius.circular(mine ? 6 : 20),
+                  onLongPress: () => _showMessageActions(item, text),
+                  child: Container(
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.sizeOf(context).width * .72,
                     ),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x0A000000),
-                        blurRadius: 6,
-                        offset: Offset(0, 2),
+                    margin: const EdgeInsets.symmetric(vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: mine ? scheme.primary : Colors.white,
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(20),
+                        topRight: const Radius.circular(20),
+                        bottomLeft: Radius.circular(mine ? 20 : 6),
+                        bottomRight: Radius.circular(mine ? 6 : 20),
                       ),
-                    ],
-                  ),
-                  child: DefaultTextStyle.merge(
-                    style: TextStyle(
-                      color: mine ? scheme.onPrimary : const Color(0xFF3D322C),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          mine
-                              ? widget.store.yourName
-                              : widget.store.partnerName,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 11,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        if (item['replyTo'] is Map)
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            margin: const EdgeInsets.only(bottom: 6),
-                            decoration: BoxDecoration(
-                              color: const Color(0x22FFFFFF),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              '${tr('Reply')}: ${(item['replyTo'] as Map)['text']}',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        if (item['photoPath'] is String)
-                          GestureDetector(
-                            onTap: () => showDialog<void>(
-                              context: context,
-                              builder: (context) => Dialog(
-                                child: Stack(
-                                  children: [
-                                    InteractiveViewer(
-                                      child: photoImage(
-                                        item['photoPath'] as String,
-                                        fit: BoxFit.contain,
-                                      ),
-                                    ),
-                                    Positioned(
-                                      right: 0,
-                                      top: 0,
-                                      child: IconButton.filled(
-                                        onPressed: () => Navigator.pop(context),
-                                        icon: const Icon(Icons.close),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: photoImage(
-                                item['photoPath'] as String,
-                                height: 160,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
-                        if (text.isNotEmpty)
-                          Text(
-                            text,
-                            style: const TextStyle(fontSize: 14, height: 1.4),
-                          ),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (time != null)
-                              Text(
-                                '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
-                                style: const TextStyle(fontSize: 10),
-                              ),
-                            if (item['hearted'] == true)
-                              const Padding(
-                                padding: EdgeInsets.only(left: 8),
-                                child: Icon(
-                                  Icons.favorite,
-                                  color: Color(0xFFFFA5B5),
-                                  size: 16,
-                                ),
-                              ),
-                            PopupMenuButton<String>(
-                              padding: EdgeInsets.zero,
-                              icon: Icon(
-                                Icons.more_horiz,
-                                size: 18,
-                                color: mine ? scheme.onPrimary : scheme.primary,
-                              ),
-                              onSelected: (value) async {
-                                if (value == 'reply')
-                                  setState(() => _replyTo = item);
-                                if (value == 'copy')
-                                  await Clipboard.setData(
-                                    ClipboardData(text: text),
-                                  );
-                                if (value == 'heart') {
-                                  try {
-                                    await widget.store.toggleHeart(
-                                      item['id'] as String,
-                                    );
-                                  } catch (_) {
-                                    if (mounted)
-                                      setState(
-                                        () => _error = 'Could not update reaction. Please retry.',
-                                      );
-                                  }
-                                }
-                              },
-                              itemBuilder: (_) => [
-                                PopupMenuItem(
-                                  value: 'reply',
-                                  child: Text(tr('Reply')),
-                                ),
-                                PopupMenuItem(
-                                  value: 'heart',
-                                  child: Text(
-                                    tr(
-                                      item['heartedByMe'] == true
-                                          ? 'Remove heart'
-                                          : 'Add a heart',
-                                    ),
-                                  ),
-                                ),
-                                if (text.isNotEmpty)
-                                  PopupMenuItem(
-                                    value: 'copy',
-                                    child: Text(tr('Copy text')),
-                                  ),
-                              ],
-                            ),
-                          ],
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x0A000000),
+                          blurRadius: 6,
+                          offset: Offset(0, 2),
                         ),
                       ],
+                    ),
+                    child: DefaultTextStyle.merge(
+                      style: TextStyle(
+                        color: mine
+                            ? scheme.onPrimary
+                            : const Color(0xFF3D322C),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            mine
+                                ? widget.store.yourName
+                                : widget.store.partnerName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 11,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          if (item['replyTo'] is Map)
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              margin: const EdgeInsets.only(bottom: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0x22FFFFFF),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '${tr('Reply')}: ${(item['replyTo'] as Map)['text']}',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          if (item['photoPath'] is String)
+                            GestureDetector(
+                              onTap: () {
+                                setState(
+                                  () => _timestampMessageId =
+                                      item['id'] as String,
+                                );
+                                showDialog<void>(
+                                  context: context,
+                                  builder: (context) => Dialog(
+                                    child: Stack(
+                                      children: [
+                                        InteractiveViewer(
+                                          child: photoImage(
+                                            item['photoPath'] as String,
+                                            fit: BoxFit.contain,
+                                          ),
+                                        ),
+                                        Positioned(
+                                          right: 0,
+                                          top: 0,
+                                          child: IconButton.filled(
+                                            onPressed: () =>
+                                                Navigator.pop(context),
+                                            icon: const Icon(Icons.close),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: photoImage(
+                                  item['photoPath'] as String,
+                                  height: 160,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+                          if (text.isNotEmpty)
+                            Text(
+                              text,
+                              style: const TextStyle(fontSize: 14, height: 1.4),
+                            ),
+                          if (_timestampMessageId == item['id'] && time != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 5),
+                              child: Text(
+                                '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  color: Color(0xFF9E8E85),
+                                ),
+                              ),
+                            ),
+                          if (item['hearted'] == true)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 5),
+                              child: Icon(
+                                Icons.favorite,
+                                color: Color(0xFFFFA5B5),
+                                size: 16,
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -641,16 +686,52 @@ class _RoomChatState extends State<RoomChat> {
       ),
       child: Row(
         children: [
-          IconButton(
-            onPressed: _busy ? null : widget.onAttach,
-            tooltip: tr('Attach chat photo'),
-            icon: const Icon(Icons.add_photo_alternate_outlined),
-          ),
-          // Moved here from the removed header so sessions can still be started.
-          IconButton(
-            onPressed: widget.onInvite,
-            tooltip: tr('Invite partner to a session'),
-            icon: const Icon(Icons.auto_awesome_rounded),
+          PopupMenuButton<String>(
+            enabled: !_busy,
+            tooltip: tr('Chat options'),
+            onSelected: _handleComposerAction,
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'photo',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.add_photo_alternate_outlined),
+                  title: Text(tr('Send a photo')),
+                ),
+              ),
+              PopupMenuItem(
+                value: 'metherapy',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.auto_awesome_rounded),
+                  title: Text(tr('Invite partner to a session')),
+                ),
+              ),
+              PopupMenuItem(
+                value: 'distance',
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    _showDistanceBanner
+                        ? Icons.visibility_off_outlined
+                        : Icons.near_me_rounded,
+                  ),
+                  title: Text(
+                    tr(
+                      _showDistanceBanner
+                          ? 'Hide distance banner'
+                          : 'Show distance banner',
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            child: Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(color: primary, shape: BoxShape.circle),
+              child: const Icon(Icons.add_rounded, color: Colors.white),
+            ),
           ),
           Expanded(
             child: TextField(
@@ -680,30 +761,27 @@ class _RoomChatState extends State<RoomChat> {
             ),
           ),
           const SizedBox(width: 10),
-          FilledButton.icon(
+          FilledButton(
             onPressed: _busy ? null : _send,
             style: FilledButton.styleFrom(
               backgroundColor: primary,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              minimumSize: const Size(44, 44),
+              padding: EdgeInsets.zero,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(22),
               ),
               elevation: 0,
             ),
-            icon: _busy
+            child: _busy
                 ? const SizedBox(
-                    width: 16,
-                    height: 16,
+                    width: 18,
+                    height: 18,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
                       color: Colors.white,
                     ),
                   )
-                : const Icon(Icons.send_rounded, size: 16),
-            label: Text(
-              tr(_busy ? 'Sending…' : 'Send'),
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
+                : const Icon(Icons.send_rounded, size: 18, color: Colors.white),
           ),
         ],
       ),

@@ -21,6 +21,23 @@ class MainActivity : FlutterActivity() {
                 else try { result.success(DeviceStatus.read(this)) }
                 catch (error: Exception) { result.error("unavailable", "Device status unavailable", null) }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jcm.closer/place_search")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "search") result.notImplemented()
+                else {
+                    val query = call.argument<String>("query").orEmpty().take(300)
+                    Thread {
+                        try {
+                            @Suppress("DEPRECATION")
+                            val matches = android.location.Geocoder(this).getFromLocationName(query, 5).orEmpty()
+                            val places = matches.map { mapOf("name" to (it.getAddressLine(0) ?: query), "lat" to it.latitude, "lon" to it.longitude) }
+                            runOnUiThread { result.success(places) }
+                        } catch (error: Exception) {
+                            runOnUiThread { result.error("search_failed", "Place search unavailable", null) }
+                        }
+                    }.start()
+                }
+            }
         CallAudioBridge(flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.jcm.closer/distance")
             .setMethodCallHandler { call, result ->

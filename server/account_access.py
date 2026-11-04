@@ -28,11 +28,7 @@ class AccountAccess:
             count = pair.get('calls', 0) if pair.get('day') == day else 0
             rate = state[rate_key] or {}
             rate_count = rate.get('calls', 0) if rate.get('minute') == minute else 0
-            if count >= 40 or rate_count >= 6:
-                raise AccessError(429, 'Metherapy’s usage limit has been reached. Please try again later.')
             image = operation == 'characters'
-            if policy['calls_used'] >= policy['calls_limit'] or (image and policy['images_used'] >= policy['images_limit']):
-                raise AccessError(429, 'Metherapy’s service allowance has been reached. Please contact support.')
             leases = {key: expiry for key, expiry in policy.get('leases', {}).items() if expiry > now}
             if len(leases) >= 2:
                 raise AccessError(429, 'Metherapy is busy. Please retry shortly.')

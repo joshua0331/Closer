@@ -1,3 +1,5 @@
+import 'legal_page.dart';
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
@@ -232,11 +234,7 @@ class _LocationSettingsPageState extends State<LocationSettingsPage> {
                   _row(
                     Icons.lock_outline_rounded,
                     'Privacy & Security',
-                    onTap: () => _info(
-                      context,
-                      'Privacy & Security',
-                      'Your location is shared only with your paired partner while location sharing is turned on. You can stop sharing here at any time.',
-                    ),
+                    onTap: () => LegalPage.open(context, 'privacy'),
                   ),
                 ]),
                 if (widget.canManageAccount) ...[

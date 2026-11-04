@@ -56,6 +56,17 @@ class HearingTests(unittest.TestCase):
         self.assertFalse(body['store'])
         self.assertEqual(result['result']['requestedRemedy'], CASE['requestedRemedy'])
 
+    @patch('court_protocol.urlopen')
+    def test_token_limited_response_retries_without_accepting_partial_answer(self, opener):
+        complete = {'status': 'completed', 'model': 'muse-spark-1.3', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps(RULING)}]}]}
+        opener.return_value.__enter__.return_value.read.side_effect = [
+            json.dumps({'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}}).encode(),
+            json.dumps(complete).encode()]
+        result = call_hearing({'action': 'verdict', 'case': CASE}, 'test-key', 'muse-spark-1.3')
+        self.assertEqual(opener.call_count, 2)
+        self.assertEqual(json.loads(opener.call_args.args[0].data)['max_output_tokens'], 14000)
+        self.assertEqual(result['result'], RULING)
+
     def test_appeal_requires_prior_ruling_and_both_sides(self):
         with self.assertRaises(ValueError):
             validate_hearing({'action': 'appeal', 'case': CASE})

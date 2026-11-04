@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
+
+import 'legal_page.dart';
 
 import '../models/cloud_couple_store.dart';
 import '../services/backend_access.dart';
@@ -347,19 +348,15 @@ class _RoomGateState extends State<RoomGate> with WidgetsBindingObserver {
                     alignment: WrapAlignment.center,
                     children: [
                       TextButton(
-                        onPressed: () =>
-                            launchUrl(Uri.base.resolve('terms.html')),
+                        onPressed: () => LegalPage.open(context, 'terms'),
                         child: const Text('Terms'),
                       ),
                       TextButton(
-                        onPressed: () =>
-                            launchUrl(Uri.base.resolve('privacy.html')),
+                        onPressed: () => LegalPage.open(context, 'privacy'),
                         child: const Text('Privacy'),
                       ),
                       TextButton(
-                        onPressed: () => launchUrl(
-                          Uri.parse('mailto:joshuachristianmirang@gmail.com'),
-                        ),
+                        onPressed: () => LegalPage.open(context, 'help'),
                         child: const Text('Help'),
                       ),
                     ],

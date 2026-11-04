@@ -119,10 +119,13 @@ def update(data, uid, case_id, body=None, voice_version=None):
                 if not isinstance(value,str) or len(value)>2000:
                     raise AccessError(400,'Use 2000 characters or fewer.')
                 value='[No answer submitted before the turn expired.]' if expired else value.strip()
+                if not value and body.get('skip') is True: value='[Participant chose to pass this turn.]'
                 if not value:raise AccessError(400,'Enter your answer first.')
                 if index is None:state[field]=value[:1000] if field=='requestedRemedy' else value
                 else:state[field][index]=value
-                state['phase']+=1
+                # The opening context is also the first perspective; alternate speakers.
+                if phase == 0: state['statements'][0] = value
+                state['phase'] = {0: 2, 4: 7, 6: 8}.get(phase, phase + 1)
                 state.update(lastTurnBy=state['people'].index(uid),lastTurnPhase=phase,
                              lastTurnText=value,lastTurnVersion=state['version']+1)
                 if len(set(state.get('aiConsent', [])))==2:
