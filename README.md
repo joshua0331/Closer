@@ -156,3 +156,9 @@ tool/            Android launch helper
 The bundled reference courtroom and Closer branding were generated using an external OpenAI image-generation tool, not Meta. Muse Image personalized scenes are separate outputs. The connected map uses OpenStreetMap tiles/data and visible attribution; the earlier offline illustration used Natural Earth. Keep bundled font/data notices and disclose reused work/assets in the hackathon submission.
 
 Using Meta models does not guarantee hackathon eligibility. Show only verified functionality, identify event contributions, obtain consent for demo portraits/material and follow the participant guide. The repository's [LICENSE](LICENSE) governs project code; third-party assets retain their own terms.
+
+## Demo
+
+- **3-minute demo video:** [Watch on YouTube](https://youtu.be/1qtqWrLGDPE)
+- **Live app:** [Open the Closer app](https://drive.google.com/file/d/1HStIuRYSz06FRzel1LZkqU14-QbzEE3V/view?usp=sharing)
+
