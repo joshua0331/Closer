@@ -14,7 +14,7 @@ class BackendAccess extends ChangeNotifier {
           baseUrl ??
           const String.fromEnvironment(
             'BACKEND_URL',
-            defaultValue: 'https://closer-demo-backend-97502564446.asia-southeast1.run.app',
+            defaultValue: 'https://closer-demo-backend-55gnqlfgvq-as.a.run.app',
           ),
       _client = client ?? http.Client();
   static final instance = BackendAccess();

@@ -35,7 +35,6 @@ class CloudCoupleStore extends CoupleStore {
   final User? user;
   final String? roomSession, roomUid;
   final bool courtOnly;
-  final _client = http.Client();
   Timer? _timer;
   StreamSubscription<String>? _pushTokenSubscription;
   String? _registeredPushId;
@@ -96,33 +95,36 @@ class CloudCoupleStore extends CoupleStore {
       'X-Demo-Session': BackendAccess.instance.token,
       'X-Request-ID': newRequestId(),
     };
-    final response =
-        await (body == null
-                ? _client.get(uri, headers: headers)
-                : _client.post(uri, headers: headers, body: jsonEncode(body)))
-            .timeout(
-              Duration(
-                seconds: body?['operation'] == 'art'
-                    ? 220
-                    : body?['operation'] == 'memory_tags'
-                    ? 65
-                    : body?['operation'] == 'review' ||
+    final client = http.Client();
+    try {
+      final response = await (body == null
+              ? client.get(uri, headers: headers)
+              : client.post(uri, headers: headers, body: jsonEncode(body)))
+          .timeout(
+        Duration(
+          seconds: body?['operation'] == 'art'
+              ? 220
+              : body?['operation'] == 'memory_tags'
+                  ? 65
+                  : body?['operation'] == 'review' ||
                           body?['operation'] == 'opening' ||
                           body?['operation'] == 'facilitate'
-                    ? 100
-                    : 35,
-              ),
-            );
-    if (response.statusCode != 200) {
-      String message = 'Could not connect. Check your internet and retry.';
-      try {
-        message = (jsonDecode(response.body) as Map)['error'] as String;
-      } catch (_) {}
-      throw Exception(message);
+                      ? 100
+                      : 35,
+        ),
+      );
+      if (response.statusCode != 200) {
+        String message = 'Could not connect. Check your internet and retry.';
+        try {
+          message = (jsonDecode(response.body) as Map)['error'] as String;
+        } catch (_) {}
+        throw Exception(message);
+      }
+      return response;
+    } finally {
+      client.close();
     }
-    return response;
   }
-
   Future<Map<String, dynamic>> action(Map<String, dynamic> body) async {
     final response = await request('couple/action', body: body);
     return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
@@ -498,7 +500,6 @@ class CloudCoupleStore extends CoupleStore {
     _closed = true;
     _timer?.cancel();
     _pushTokenSubscription?.cancel();
-    _client.close();
     super.dispose();
   }
 }
